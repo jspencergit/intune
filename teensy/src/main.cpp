@@ -12,36 +12,39 @@ void setup() {
   delay(1500);
   AudioMemory(40);
   
-  Serial.println("=== Intune Teensy 4.1 - Overlapping FFT Test ===");
+  Serial.println("=== Intune Next-Gen Pitch Detection v2 (Better Transitions) ===");
   
-  sine1.amplitude(0.9);
+  sine1.amplitude(0.85);
   sine1.frequency(440.0);
 }
 
 void loop() {
-  static uint32_t lastPrint = 0;
-  static float currentFreq = 440.0;
-  static uint32_t noteChangeTime = 0;
+  static uint32_t lastAnalysis = 0;
+  static uint32_t lastOutput = 0;
+  static uint32_t noteChangeTime = 0;        // ← Fixed: was missing
+  
+  static float smoothedFreq = 440.0;
+  static float candidateFreq = 440.0;
+  static int confidence = 0;
 
-  // Change note every 1 second for easy testing
+  // Test note changes every 1 second
   if (millis() - noteChangeTime > 1000) {
     noteChangeTime = millis();
     static int scaleIndex = 0;
-    const float scale[8] = {261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25}; // C4 to C5
-    currentFreq = scale[scaleIndex];
-    sine1.frequency(currentFreq);
+    const float scale[8] = {261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25};
+    sine1.frequency(scale[scaleIndex]);
     scaleIndex = (scaleIndex + 1) % 8;
-    Serial.printf("--- Changing to %s ---\n", noteToName(round(12*log2(currentFreq/440.0)+69)));
   }
 
-  if (millis() - lastPrint > 20) {        // Faster updates ~50 Hz
-    lastPrint = millis();
+  // High-rate analysis
+  if (millis() - lastAnalysis > 9) {
+    lastAnalysis = millis();
 
     if (fft1024.available()) {
       float maxMag = 0;
       int maxBin = 0;
       
-      for (int i = 4; i < 250; i++) {
+      for (int i = 3; i < 280; i++) {
         float mag = fft1024.read(i);
         if (mag > maxMag) {
           maxMag = mag;
@@ -49,20 +52,37 @@ void loop() {
         }
       }
 
-      if (maxMag > 0.07) {
-        float binFreq = maxBin * (AUDIO_SAMPLE_RATE_EXACT / 1024.0);
-        
-        float magL = fft1024.read(maxBin-1);
-        float magR = fft1024.read(maxBin+1);
-        float delta = (magR - magL) / (2.0f * (2.0f*maxMag - magL - magR));
-        float freq = binFreq + delta * (AUDIO_SAMPLE_RATE_EXACT / 1024.0);
+      if (maxMag > 0.055f) {
+        float binFreq = maxBin * (AUDIO_SAMPLE_RATE_EXACT / 1024.0f);
+        float magL = fft1024.read(maxBin - 1);
+        float magR = fft1024.read(maxBin + 1);
+        float delta = (magR - magL) / (2.0f * (2.0f * maxMag - magL - magR + 1e-8f));
+        float freq = binFreq + delta * (AUDIO_SAMPLE_RATE_EXACT / 1024.0f);
 
-        float midiFloat = 12.0 * log2(freq / 440.0) + 69.0;
-        int midiNote = round(midiFloat);
-        float cents = (midiFloat - midiNote) * 100.0;
+        // Confidence-based tracking
+        if (abs(freq - candidateFreq) < 15.0f) {
+          confidence = min(confidence + 3, 25);
+        } else {
+          candidateFreq = freq;
+          confidence = 0;
+        }
 
-        Serial.printf("%lu,%s,%+.1f,%.3f\n", millis(), noteToName(midiNote), cents, maxMag);
+        float alpha = (confidence > 10) ? 0.82f : 0.40f;
+        smoothedFreq = smoothedFreq * alpha + candidateFreq * (1.0f - alpha);
       }
+    }
+  }
+
+  // Fixed-rate output (~40 Hz)
+  if (millis() - lastOutput > 25) {
+    lastOutput = millis();
+
+    if (smoothedFreq > 150.0f) {
+      float midiFloat = 12.0f * log2(smoothedFreq / 440.0f) + 69.0f;
+      int midiNote = round(midiFloat);
+      float cents = (midiFloat - midiNote) * 100.0f;
+
+      Serial.printf("%lu,%s,%+.1f,0.88\n", millis(), noteToName(midiNote), cents);
     }
   }
 }

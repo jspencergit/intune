@@ -5,18 +5,19 @@ import numpy as np
 from collections import deque
 from matplotlib.collections import LineCollection
 from matplotlib.widgets import Slider
+import time
 
 # ================== CONFIG ==================
 SERIAL_PORT = "COM3"
 BAUD_RATE = 115200
 INITIAL_HISTORY_SEC = 6.0
+POINTS_PER_SECOND = 60        # Increased for smoother scrolling
 # ===========================================
 
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.05)
 print(f"✅ Connected! Initial history = {INITIAL_HISTORY_SEC} seconds")
 
-# Initial deques
-current_max = int(INITIAL_HISTORY_SEC * 45)
+current_max = int(INITIAL_HISTORY_SEC * POINTS_PER_SECOND)
 pitches = deque(maxlen=current_max)
 cents_data = deque(maxlen=current_max)
 
@@ -37,17 +38,15 @@ title = ax.set_title(f"Intune — Viola Pitch Trace (Alto Clef)   |   History: {
 ax.set_xlabel("Time (recent → past)", fontsize=12, color='#aaaaaa')
 ax.yaxis.set_visible(False)
 
-# Staff
+# Staff and labels (same as before)
 for y in [2.0, 2.8, 3.6, 4.4, 5.2]:
     ax.axhline(y=y, color='#eeeeee', lw=1.4, alpha=0.75)
 for y in [1.2, 1.6, 2.4, 3.2, 4.0, 4.8, 5.6, 6.4, 7.2]:
     ax.axhline(y=y, color='#aaaaaa', lw=0.9, linestyle='--', alpha=0.4)
 
-# Alto Clef (text fallback)
 ax.text(-0.085, 0.48, "Alto Clef", fontsize=14, va='center', ha='center', 
         color='#a0c4ff', alpha=0.9, transform=ax.transAxes)
 
-# Note labels (always visible)
 note_labels = [
     ("C3", 1.2), ("D3", 1.6), ("E3", 2.0), ("F3", 2.4), ("G3", 2.8),
     ("A3", 3.2), ("B3", 3.6), ("C4", 4.0), ("D4", 4.4), ("E4", 4.8),
@@ -76,14 +75,13 @@ def get_color(cents):
 
 def update_history_length(seconds):
     global pitches, cents_data
-    new_max = max(120, int(seconds * 45))
+    new_max = max(150, int(seconds * POINTS_PER_SECOND))
     
-    # Recreate deques with new size
-    old_pitches = list(pitches)
-    old_cents = list(cents_data)
+    old_p = list(pitches)
+    old_c = list(cents_data)
     
-    pitches = deque(old_pitches[-new_max:], maxlen=new_max)
-    cents_data = deque(old_cents[-new_max:], maxlen=new_max)
+    pitches = deque(old_p[-new_max:], maxlen=new_max)
+    cents_data = deque(old_c[-new_max:], maxlen=new_max)
     
     ax.set_xlim(0, new_max)
 
@@ -116,11 +114,11 @@ def update(frame):
 
     return lc, glow_lc
 
-ani = animation.FuncAnimation(fig, update, interval=25, blit=False, cache_frame_data=False)
+ani = animation.FuncAnimation(fig, update, interval=20, blit=False, cache_frame_data=False)  # Faster update
 
-# History Slider
+# Slider
 ax_slider = plt.axes([0.2, 0.05, 0.6, 0.03])
-history_slider = Slider(ax_slider, 'History (seconds)', 1.0, 12.0, valinit=INITIAL_HISTORY_SEC, valstep=0.5)
+history_slider = Slider(ax_slider, 'History (seconds)', 1.0, 15.0, valinit=INITIAL_HISTORY_SEC, valstep=0.5)
 
 def on_slider_change(val):
     update_history_length(val)
