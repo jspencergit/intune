@@ -1,0 +1,21 @@
+# PlatformIO / Teensy
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+*.hex
+*.elf
+*.o
+*.a
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+env/
+
+# Old project folders (temporary - to ignore until cleaned up)
+intune-visualizer/
+intune_teensy/
+output.txt
