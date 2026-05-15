@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
 from collections import deque
+from matplotlib.collections import LineCollection
 
 # ================== CONFIG ==================
 SERIAL_PORT = "COM3"
@@ -12,53 +13,46 @@ BPM = 80
 # ===========================================
 
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.05)
-print(f"✅ Connected to Teensy!  BPM = {BPM}")
+print(f"✅ Connected! BPM = {BPM}")
 
 pitches = deque(maxlen=MAX_POINTS)
 cents_data = deque(maxlen=MAX_POINTS)
 
-fig, ax = plt.subplots(figsize=(15, 8))
+plt.style.use('dark_background')
+fig, ax = plt.subplots(figsize=(15, 8), facecolor='#0a0a1f')
 
-plot_line, = ax.plot([], [], lw=3, color='#1f77b4', alpha=0.9)
-scatter = ax.scatter([], [], c=[], cmap='RdYlGn_r', s=50, vmin=-40, vmax=40, zorder=5)
+# We'll use LineCollection for multicolored trace
+lc = LineCollection([], linewidth=4.2, alpha=0.95)
+ax.add_collection(lc)
 
-ax.set_ylim(1.0, 8.0)                    # More room above for higher notes
+glow_lc = LineCollection([], linewidth=10, alpha=0.16)
+ax.add_collection(glow_lc)
+
+ax.set_ylim(0.7, 7.5)
 ax.set_xlim(0, MAX_POINTS)
 
-ax.set_title(f"Intune — Real-time Viola Pitch Trace (Alto Clef)  |  {BPM} BPM  |  4/4", fontsize=18, pad=20)
-ax.set_xlabel("Time (Measures • Beats)")
-ax.set_ylabel("")
+ax.set_title(f"Intune — Viola Pitch Trace (Alto Clef)   |   {BPM} BPM   |   4/4", 
+             fontsize=19, pad=25, color='#e0e0ff')
+ax.set_xlabel("Time (Measures • Beats)", fontsize=12, color='#aaaaaa')
 
-# Hide y-axis numbers
-ax.yaxis.set_visible(False)
+# Elegant staff
+for y in [2.0, 2.8, 3.6, 4.4, 5.2]:
+    ax.axhline(y=y, color='#ffffff', lw=1.1, alpha=0.65)
 
-# === CORRECT ALTO CLEF STAFF (Viola) ===
-# Lines: F3, A3, C4, E4, G4
-alto_clef_lines = [2.0, 2.8, 3.6, 4.4, 5.2]
-for y in alto_clef_lines:
-    ax.axhline(y=y, color='black', lw=1.4, alpha=0.75)   # Thin, elegant lines
+ax.text(-23, 4.0, "𝄞", fontsize=82, va='center', ha='center', color='#a0c4ff', alpha=0.85)
 
-# Alto Clef label
-ax.text(-22, 3.6, "Alto Clef", fontsize=13, va='center', ha='center', 
-        color='black', fontweight='bold', style='italic')
-
-# Static note names (Viola range)
+# Note labels
 labels = [
     ("C3", 1.2), ("D3", 1.6), ("E3", 2.0), ("F3", 2.4), ("G3", 2.8),
     ("A3", 3.2), ("B3", 3.6), ("C4", 4.0), ("D4", 4.4), ("E4", 4.8),
-    ("F4", 5.2), ("G4", 5.6), ("A4", 6.0), ("B4", 6.4), ("C5", 6.8),
-    ("D5", 7.2), ("E5", 7.6)
+    ("F4", 5.2), ("G4", 5.6), ("A4", 6.0), ("B4", 6.4), ("C5", 6.8)
 ]
 
 for note, y in labels:
-    ax.text(-11, y, note, fontsize=12, va='center', ha='right', 
-            color='black', fontweight='medium')
+    ax.text(-11, y, note, fontsize=13, va='center', ha='right', 
+            color='#dddddd', fontweight='medium')
 
-ax.grid(True, alpha=0.15, axis='y')
-
-# Vertical dashed lines for measures
-for i in range(0, MAX_POINTS + 1, 120):
-    ax.axvline(x=i, color='gray', linestyle='--', lw=1.2, alpha=0.5)
+ax.grid(True, alpha=0.08, linestyle='--', color='#334455')
 
 def pitch_to_y(note_str):
     try:
@@ -69,6 +63,14 @@ def pitch_to_y(note_str):
         return 1.2 + steps * 0.4
     except:
         return 4.0
+
+def get_color(cents):
+    if abs(cents) < 9:
+        return '#7dff9f'      # In tune - beautiful green
+    elif cents > 0:
+        return '#ff9d7d'      # Sharp - warm orange
+    else:
+        return '#9d9dff'      # Flat - cool blue
 
 def update(frame):
     try:
@@ -87,13 +89,21 @@ def update(frame):
 
     if len(pitches) > 3:
         x = np.arange(len(pitches))
-        plot_line.set_data(x, pitches)
-        scatter.set_offsets(np.column_stack((x, pitches)))
+        y = np.array(pitches)
         
-        colors = ['green' if abs(c) < 10 else 'red' if c > 0 else 'blue' for c in cents_data]
-        scatter.set_color(colors)
+        # Create segments for multicolored line
+        points = np.column_stack((x, y)).reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        
+        colors = [get_color(c) for c in cents_data]
+        
+        lc.set_segments(segments)
+        lc.set_color(colors)
+        
+        glow_lc.set_segments(segments)
+        glow_lc.set_color(colors)
 
-    return plot_line, scatter
+    return lc, glow_lc
 
 ani = animation.FuncAnimation(fig, update, interval=25, blit=False, cache_frame_data=False)
 
