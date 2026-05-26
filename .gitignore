@@ -19,3 +19,9 @@ env/
 intune-visualizer/
 intune_teensy/
 output.txt
+
+# Audio reference files (large media - do not commit)
+*.mp3
+*.wav
+*.flac
+reference_audio/
