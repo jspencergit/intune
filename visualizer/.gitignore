@@ -25,6 +25,7 @@ Thumbs.db
 session_*.csv
 *.png
 *.jpg
+plots/
 
 # Audio reference files (do not commit large media files)
 *.mp3

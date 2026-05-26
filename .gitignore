@@ -25,3 +25,6 @@ output.txt
 *.wav
 *.flac
 reference_audio/
+
+# Generated analysis output
+visualizer/plots/
