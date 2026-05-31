@@ -79,7 +79,7 @@ G3,8
 
 **Notable design choices:**
 - Split view layout: 
-  - Top = Alto Clef staff (B3 as lowest displayed note → better vertical resolution on the notes you actually play)
+  - Top = Alto Clef staff (full practical viola range: C3 open C string through F6 on the high A string)
   - Bottom = Zoomed cents deviation view (±25¢ range, ±5¢ in-tune green band)
   - Live stats panel moved to the top bar (right of the large current note+cents display) so it never covers the newest data on the right side of the trace.
 - Right-aligned trace (newest data always at right edge).

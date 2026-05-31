@@ -51,12 +51,26 @@ MIN_HISTORY_POINTS = 150
 UPDATE_INTERVAL_MS = 20  # ~50 fps target
 
 # Musical constants (Alto Clef / Viola)
-STAFF_Y_MAIN = [2.0, 2.8, 3.6, 4.4, 5.2]          # Solid staff lines
-STAFF_Y_LEDGER = [1.2, 1.6, 2.4, 3.2, 4.0, 4.8, 5.6, 6.4, 7.2]
+# Expanded range to cover full practical viola: C3 (open C) → ~F6 (high on A string)
+STAFF_Y_MAIN = [2.0, 2.8, 3.6, 4.4, 5.2]          # Core 5 staff lines (G3–E4 area)
+
+# Extended ledger lines for full viola range
+STAFF_Y_LEDGER = [
+    1.2, 1.6,           # C3, D3 (low end)
+    2.4, 3.2,           # E3/F3 area
+    4.0, 4.8, 5.6, 6.4, 7.2, 8.0, 8.8,   # mid to high
+    9.6, 10.4,          # C6 / E6 area
+]
+
 NOTE_LABELS = [
-    # C3 removed - viola focus starts at B3 for better vertical resolution in the main staff view
-    ("B3", 3.6), ("C4", 4.0), ("D4", 4.4), ("E4", 4.8),
-    ("F4", 5.2), ("G4", 5.6), ("A4", 6.0), ("B4", 6.4), ("C5", 6.8),
+    # Full practical viola range: C3 (open C string) up to F6 (high positions on A string)
+    ("C3", 1.2), ("D3", 1.6), ("E3", 2.0), ("F3", 2.4), ("G3", 2.8),
+    ("A3", 3.2), ("B3", 3.6),
+    ("C4", 4.0), ("D4", 4.4), ("E4", 4.8), ("F4", 5.2), ("G4", 5.6),
+    ("A4", 6.0), ("B4", 6.4),
+    ("C5", 6.8), ("D5", 7.2), ("E5", 7.6), ("F5", 8.0), ("G5", 8.4),
+    ("A5", 8.8),
+    ("C6", 9.6), ("D6", 10.0), ("E6", 10.4), ("F6", 10.8),
 ]
 
 # Color scheme (dark elegant theme)
@@ -473,14 +487,15 @@ class IntuneVisualizer:
         # Main staff plot (Alto Clef) - cropped at bottom for better vertical resolution on viola range (B3 and above)
         self.ax_main = self.fig.add_subplot(gs[1])
         self.ax_main.set_facecolor(COLOR_BG)
-        self.ax_main.set_ylim(2.9, 7.6)   # B3 as effective lowest note → tighter vertical spacing / more resolution on used notes
+        # Full viola range: C3 (open C) to ~F6 (high on A string)
+        self.ax_main.set_ylim(0.6, 11.5)
         self.ax_main.set_xlim(0, self.max_points)
 
         # Staff lines (adjusted - fewer low ledgers since we no longer show down to C3)
         for y in STAFF_Y_MAIN:
             self.ax_main.axhline(y=y, color=COLOR_STAFF, lw=1.6, alpha=0.85)
         # Reduced low ledger lines (B3 and above focus)
-        for y in [2.8, 3.2, 4.0, 4.8, 5.6, 6.4, 7.2]:
+        for y in STAFF_Y_LEDGER:
             self.ax_main.axhline(y=y, color=COLOR_LEDGER, lw=0.9, linestyle="--", alpha=0.45)
 
         # Note labels on left (now starts at B3)
@@ -489,7 +504,7 @@ class IntuneVisualizer:
                               color="#cccccc", fontweight="medium",
                               transform=self.ax_main.get_yaxis_transform())
 
-        self.ax_main.text(-0.055, 5.0, "ALTO\nCLEF", fontsize=11, va="center", ha="center",
+        self.ax_main.text(-0.055, 5.8, "ALTO\nCLEF", fontsize=11, va="center", ha="center",
                           color="#88aaff", alpha=0.85, transform=self.ax_main.get_yaxis_transform(),
                           linespacing=1.15)
 

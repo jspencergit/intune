@@ -8,7 +8,7 @@ Connect a pitch detection device over serial (or use built-in simulation) and se
 ## Features
 
 - **Split view layout**:
-  - **Top**: Alto Clef staff (starts at B3 for better vertical resolution on the notes you actually play)
+  - **Top**: Alto Clef staff covering full practical viola range (C3 open C string → F6 high on A string)
   - **Bottom**: Zoomed cents deviation view (±25¢ full scale, green band = ±5¢ in tune)
   - Statistics panel now lives in the top bar (right of the big current note display) so it never covers the right edge of the trace
 - **Color-coded**:
