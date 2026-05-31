@@ -7,12 +7,16 @@ Connect a pitch detection device over serial (or use built-in simulation) and se
 
 ## Features
 
-- **Beautiful musical staff** — Accurate Alto Clef layout with note labels
-- **Color-coded trace**:
-  - Green = In tune (< ±9 cents)
-  - Orange = Sharp
+- **Split view layout**:
+  - **Top**: Alto Clef staff (starts at B3 for better vertical resolution on the notes you actually play)
+  - **Bottom**: Zoomed cents deviation view (±25¢ full scale, green band = ±5¢ in tune)
+  - Statistics panel now lives in the top bar (right of the big current note display) so it never covers the right edge of the trace
+- **Color-coded**:
+  - Green = In tune (< ±5 cents)
+  - Red = Sharp
   - Blue = Flat
 - **Large current reading** — Prominent display of current note + deviation in cents
+- **Zoomed deviation view** (new) — Bottom panel gives high-resolution view of cents error over time so small intonation issues are easy to see
 - **Live statistics** — Session duration, % time in tune, mean/max deviation
 - **Threaded serial reader** with automatic reconnection
 - **Simulation mode** (`--simulate`) — Develop and test without any hardware
@@ -89,18 +93,22 @@ G3,8
 
 ## Keyboard Shortcuts
 
-| Key          | Action                  |
-|--------------|-------------------------|
-| `Space` / `P`| Pause / Resume          |
-| `C`          | Clear history & stats   |
-| `R`          | Reset statistics only   |
-| `Q` / `Esc`  | Quit                    |
+| Key              | Action                                      |
+|------------------|---------------------------------------------|
+| `Space` / `P`    | Pause / Resume                              |
+| `C`              | Clear history & stats                       |
+| `E`              | Export debug log (CSV)                      |
+| Pause + mouse    | Crosshair + exact values (great for glitches) |
+| `R`              | Reset statistics only                       |
+| `Q` / `Esc`      | Quit                                        |
 
 ## Controls (Mouse)
 
 - **History slider** — Change how far back the trace goes (1.5s – 18s)
 - **Pause / Resume button**
 - **Clear button**
+- **Export Log button** — Saves a rich debug CSV (history + full stats + metadata) with native file save dialog
+- **Crosshairs on pause** — Pause the trace, then move your mouse over the plot to get a crosshair + exact timestamp / note / cents / confidence at any point. Extremely useful for measuring how long glitches last.
 
 ## Architecture Highlights (v0.2+)
 

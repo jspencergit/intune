@@ -10,8 +10,8 @@ Features:
 - Simulation mode for development without hardware (--simulate)
 - Large, clear current note + cents display with color
 - Live statistics (time in tune, average deviation, etc.)
-- Pause / Clear / History controls
-- Keyboard shortcuts
+- Pause / Clear / History controls + crosshair inspection (pause then hover over trace)
+- Keyboard shortcuts (E = export debug log)
 - Cross-platform serial port handling
 - Proper error handling and status feedback
 - Clean, beautiful dark theme with musical staff
@@ -54,23 +54,23 @@ UPDATE_INTERVAL_MS = 20  # ~50 fps target
 STAFF_Y_MAIN = [2.0, 2.8, 3.6, 4.4, 5.2]          # Solid staff lines
 STAFF_Y_LEDGER = [1.2, 1.6, 2.4, 3.2, 4.0, 4.8, 5.6, 6.4, 7.2]
 NOTE_LABELS = [
-    ("C3", 1.2), ("D3", 1.6), ("E3", 2.0), ("F3", 2.4), ("G3", 2.8),
-    ("A3", 3.2), ("B3", 3.6), ("C4", 4.0), ("D4", 4.4), ("E4", 4.8),
+    # C3 removed - viola focus starts at B3 for better vertical resolution in the main staff view
+    ("B3", 3.6), ("C4", 4.0), ("D4", 4.4), ("E4", 4.8),
     ("F4", 5.2), ("G4", 5.6), ("A4", 6.0), ("B4", 6.4), ("C5", 6.8),
 ]
 
 # Color scheme (dark elegant theme)
 COLOR_BG = "#0a0a1f"
 COLOR_IN_TUNE = "#7dff9f"
-COLOR_SHARP = "#ff9d7d"
-COLOR_FLAT = "#9d9dff"
+COLOR_SHARP = "#ff6b6b"   # red for sharp
+COLOR_FLAT = "#6b9cff"    # blue for flat
 COLOR_TEXT = "#e0e0ff"
 COLOR_TEXT_DIM = "#aaaaaa"
 COLOR_STAFF = "#eeeeee"
 COLOR_LEDGER = "#aaaaaa"
 
-IN_TUNE_THRESHOLD_CENTS = 9
-GOOD_THRESHOLD_CENTS = 20
+IN_TUNE_THRESHOLD_CENTS = 5
+GOOD_THRESHOLD_CENTS = 15
 
 # =============================================================================
 # DATA MODELS
@@ -93,6 +93,7 @@ class PitchSample:
     note: str
     cents: float
     y_pos: float
+    confidence: Optional[float] = None   # From 4th field (YIN probability, FFT confidence, etc.)
 
 
 @dataclass
@@ -264,11 +265,24 @@ class SerialReader:
 
                 if note is not None and cents is not None:
                     logging.debug(f"  → Parsed successfully: note={note}, cents={cents}")
+
+                    # Try to parse optional 4th field as confidence/probability (0-1 or 0-100)
+                    confidence = None
+                    if len(parts) >= 4:
+                        try:
+                            c4 = float(parts[3])
+                            # Normalize: if > 1.0 assume percentage, else keep as-is
+                            confidence = c4 / 100.0 if c4 > 1.0 else c4
+                            confidence = max(0.0, min(1.0, confidence))
+                        except (ValueError, IndexError):
+                            pass
+
                     sample = PitchSample(
                         timestamp=time.time(),
                         note=note,
                         cents=cents,
                         y_pos=pitch_to_y(note),
+                        confidence=confidence,
                     )
                     try:
                         self.out_queue.put_nowait(sample)
@@ -334,6 +348,7 @@ class Simulator:
                 note=self.base_note,
                 cents=self.current_cents,
                 y_pos=self.base_y + (self.current_cents * 0.012),  # small visual movement
+                confidence=None,   # Simulation doesn't have real detector confidence
             )
             try:
                 self.out_queue.put_nowait(sample)
@@ -375,12 +390,20 @@ class IntuneVisualizer:
         self.ax_status = None
         self.lc = None
         self.glow_lc = None
+        self.zoom_lc = None
+        self.ax_zoom = None
         self.current_text = None
         self.stats_text = None
         self.status_text = None
         self.slider = None
         self.pause_button = None
         self.clear_button = None
+        self.export_button = None
+
+        # Crosshair / hover inspection (shown when paused)
+        self.crosshair_v = None
+        self.crosshair_h = None
+        self.hover_text = None
 
         self._setup_logging()
         self._setup_figure()
@@ -398,15 +421,22 @@ class IntuneVisualizer:
         self.fig = plt.figure(figsize=(16, 9), facecolor=COLOR_BG)
 
         # Use GridSpec for flexible layout
+        # Row 0: Top bar - left: big current note, right: stats
+        # Row 1: Main Alto Clef staff with trace
+        # Row 2: Zoomed cents deviation view
+        # Row 3: Controls
         gs = self.fig.add_gridspec(
-            3, 1,
-            height_ratios=[0.9, 5.8, 1.0],
-            hspace=0.12,
-            left=0.06, right=0.98, top=0.94, bottom=0.06
+            4, 1,
+            height_ratios=[1.0, 3.8, 2.5, 0.9],
+            hspace=0.13,
+            left=0.06, right=0.98, top=0.94, bottom=0.05
         )
 
-        # Status / current reading area (top)
-        self.ax_status = self.fig.add_subplot(gs[0])
+        # Top row: split into big current reading (left) and stats (right)
+        gs_top = gs[0].subgridspec(1, 2, width_ratios=[2.1, 1.0], wspace=0.04)
+
+        # Left: Big current note + cents display
+        self.ax_status = self.fig.add_subplot(gs_top[0, 0])
         self.ax_status.set_xlim(0, 1)
         self.ax_status.set_ylim(0, 1)
         self.ax_status.axis("off")
@@ -423,25 +453,43 @@ class IntuneVisualizer:
             fontsize=11, ha="center", va="center", color=COLOR_TEXT_DIM, alpha=0.85
         )
 
-        # Main staff plot
+        # Right: Live statistics (moved here so it doesn't cover the right edge of the trace)
+        self.ax_top_stats = self.fig.add_subplot(gs_top[0, 1])
+        self.ax_top_stats.set_xlim(0, 1)
+        self.ax_top_stats.set_ylim(0, 1)
+        self.ax_top_stats.axis("off")
+        self.ax_top_stats.set_facecolor(COLOR_BG)
+
+        # Stats text - now lives in the top-right panel (no longer overlaps the right side of the trace)
+        self.stats_text = self.ax_top_stats.text(
+            0.97, 0.92, "",
+            transform=self.ax_top_stats.transAxes,
+            fontsize=8.5, ha="right", va="top",
+            color=COLOR_TEXT_DIM, alpha=0.95,
+            family="monospace",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#12122a", edgecolor="#2a2a55", alpha=0.92)
+        )
+
+        # Main staff plot (Alto Clef) - cropped at bottom for better vertical resolution on viola range (B3 and above)
         self.ax_main = self.fig.add_subplot(gs[1])
         self.ax_main.set_facecolor(COLOR_BG)
-        self.ax_main.set_ylim(0.7, 7.7)
+        self.ax_main.set_ylim(2.9, 7.6)   # B3 as effective lowest note → tighter vertical spacing / more resolution on used notes
         self.ax_main.set_xlim(0, self.max_points)
 
-        # Staff lines
+        # Staff lines (adjusted - fewer low ledgers since we no longer show down to C3)
         for y in STAFF_Y_MAIN:
             self.ax_main.axhline(y=y, color=COLOR_STAFF, lw=1.6, alpha=0.85)
-        for y in STAFF_Y_LEDGER:
+        # Reduced low ledger lines (B3 and above focus)
+        for y in [2.8, 3.2, 4.0, 4.8, 5.6, 6.4, 7.2]:
             self.ax_main.axhline(y=y, color=COLOR_LEDGER, lw=0.9, linestyle="--", alpha=0.45)
 
-        # Note labels on left
+        # Note labels on left (now starts at B3)
         for note, y in NOTE_LABELS:
             self.ax_main.text(-0.018, y, note, fontsize=10.5, va="center", ha="right",
                               color="#cccccc", fontweight="medium",
                               transform=self.ax_main.get_yaxis_transform())
 
-        self.ax_main.text(-0.055, 4.2, "ALTO\nCLEF", fontsize=11, va="center", ha="center",
+        self.ax_main.text(-0.055, 5.0, "ALTO\nCLEF", fontsize=11, va="center", ha="center",
                           color="#88aaff", alpha=0.85, transform=self.ax_main.get_yaxis_transform(),
                           linespacing=1.15)
 
@@ -449,21 +497,56 @@ class IntuneVisualizer:
         self.ax_main.set_xlabel("Time  (older  ←――――――――――→  newer)", fontsize=10, color=COLOR_TEXT_DIM, labelpad=6)
         self.ax_main.grid(True, alpha=0.07, linestyle="--", color="#445566")
 
+        # === Zoomed Cents Deviation View (bottom) ===
+        self.ax_zoom = self.fig.add_subplot(gs[2])
+        self.ax_zoom.set_facecolor(COLOR_BG)
+        self.ax_zoom.set_ylim(-25, 25)          # Good resolution for ± few cents while catching bigger errors
+        self.ax_zoom.set_xlim(0, self.max_points)
+
+        # Reference lines for the new ±5 cent in-tune zone
+        self.ax_zoom.axhline(0, color="#ffffff", lw=1.1, alpha=0.65)                    # Target pitch
+        self.ax_zoom.axhline(+IN_TUNE_THRESHOLD_CENTS, color=COLOR_IN_TUNE, lw=0.8, linestyle="--", alpha=0.6)
+        self.ax_zoom.axhline(-IN_TUNE_THRESHOLD_CENTS, color=COLOR_IN_TUNE, lw=0.8, linestyle="--", alpha=0.6)
+
+        # Light green band for in-tune zone
+        self.ax_zoom.axhspan(-IN_TUNE_THRESHOLD_CENTS, +IN_TUNE_THRESHOLD_CENTS,
+                             color=COLOR_IN_TUNE, alpha=0.08)
+
+        self.ax_zoom.set_ylabel("Cents Deviation", fontsize=10, color=COLOR_TEXT_DIM, labelpad=4)
+        self.ax_zoom.tick_params(axis='y', labelsize=8, colors=COLOR_TEXT_DIM)
+        self.ax_zoom.set_xlabel("Time  (older  ←――――――――――→  newer)", fontsize=9, color=COLOR_TEXT_DIM, labelpad=4)
+        self.ax_zoom.grid(True, alpha=0.07, linestyle="--", color="#445566")
+        self.ax_zoom.yaxis.set_major_locator(plt.MultipleLocator(10))
+        self.ax_zoom.yaxis.set_minor_locator(plt.MultipleLocator(5))
+
         # Line collections
         self.lc = LineCollection([], linewidth=3.8, alpha=0.92)
         self.ax_main.add_collection(self.lc)
         self.glow_lc = LineCollection([], linewidth=9.5, alpha=0.13)
         self.ax_main.add_collection(self.glow_lc)
 
-        # Stats panel (bottom)
-        self.stats_text = self.ax_main.text(
-            0.98, 0.96, "",
-            transform=self.ax_main.transAxes,
-            fontsize=9.5, ha="right", va="top",
-            color=COLOR_TEXT_DIM, alpha=0.9,
-            family="monospace",
-            bbox=dict(boxstyle="round,pad=0.35", facecolor="#12122a", edgecolor="#2a2a55", alpha=0.85)
+        # Zoomed cents deviation trace (colored the same way as main trace)
+        self.zoom_lc = LineCollection([], linewidth=2.8, alpha=0.95)
+        self.ax_zoom.add_collection(self.zoom_lc)
+
+        # Crosshair lines + hover readout (for paused inspection of glitches)
+        self.crosshair_v = self.ax_main.axvline(
+            x=0, color="#88ddff", lw=0.9, alpha=0.75, linestyle="--", visible=False
         )
+        self.crosshair_h = self.ax_main.axhline(
+            y=0, color="#88ddff", lw=0.9, alpha=0.75, linestyle="--", visible=False
+        )
+        self.hover_text = self.ax_main.text(
+            0.02, 0.96, "",
+            transform=self.ax_main.transAxes,
+            fontsize=9.0, family="monospace",
+            color="#ccffaa",
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="#0f0f22", edgecolor="#334455", alpha=0.9),
+            visible=False
+        )
+
+        # (Stats panel moved to top-right bar - see ax_top_stats below)
 
         # Title
         self.fig.suptitle("Intune — Viola Intonation Visualizer", fontsize=16, color=COLOR_TEXT, y=0.985)
@@ -474,6 +557,8 @@ class IntuneVisualizer:
         # Event handlers
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
         self.fig.canvas.mpl_connect("close_event", self._on_close)
+        self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.fig.canvas.mpl_connect("axes_leave_event", self._on_axes_leave)
 
     def _create_controls(self):
         # History slider
@@ -494,6 +579,11 @@ class IntuneVisualizer:
         ax_clear = self.fig.add_axes([0.78, 0.025, 0.09, 0.038])
         self.clear_button = Button(ax_clear, "Clear", color="#2a2a55", hovercolor="#3a3a70")
         self.clear_button.on_clicked(self._clear_history)
+
+        # Export Debug Log button (new)
+        ax_export = self.fig.add_axes([0.88, 0.025, 0.10, 0.038])
+        self.export_button = Button(ax_export, "Export Log", color="#2a2a55", hovercolor="#3a3a70")
+        self.export_button.on_clicked(self._export_debug_log)
 
     # -------------------------------------------------------------------------
     # DATA INGESTION & STATS
@@ -533,6 +623,7 @@ class IntuneVisualizer:
         if len(self.history) < 2:
             self.lc.set_segments([])
             self.glow_lc.set_segments([])
+            self.zoom_lc.set_segments([])
             self._update_current_display(None)
             self._update_stats_display()
             return
@@ -554,6 +645,12 @@ class IntuneVisualizer:
         self.lc.set_color(colors)
         self.glow_lc.set_segments(segments)
         self.glow_lc.set_color(colors)
+
+        # Zoomed cents view (same x, y = cents deviation)
+        zoom_points = np.column_stack((x, cents)).reshape(-1, 1, 2)
+        zoom_segments = np.concatenate([zoom_points[:-1], zoom_points[1:]], axis=1)
+        self.zoom_lc.set_segments(zoom_segments)
+        self.zoom_lc.set_color(colors)
 
         self._update_current_display(self.history[-1])
         self._update_stats_display()
@@ -613,6 +710,8 @@ class IntuneVisualizer:
         self.history = deque(old_data[-new_max:], maxlen=new_max)
 
         self.ax_main.set_xlim(0, new_max)
+        if self.ax_zoom is not None:
+            self.ax_zoom.set_xlim(0, new_max)
         self.slider.valtext.set_text(f"{val:.1f}")
 
     def _toggle_pause(self, event=None):
@@ -620,21 +719,100 @@ class IntuneVisualizer:
         label = "Resume" if self.paused else "Pause"
         self.pause_button.label.set_text(label)
         self._update_current_display(self.history[-1] if self.history else None)
+        if not self.paused:
+            self._hide_crosshair()
 
     def _clear_history(self, event=None):
         self.history.clear()
         self.stats.reset()
         self.lc.set_segments([])
         self.glow_lc.set_segments([])
+        if self.zoom_lc is not None:
+            self.zoom_lc.set_segments([])
         self._update_current_display(None)
         self._update_stats_display()
+        self._hide_crosshair()
         logging.info("History cleared")
+
+    def _export_debug_log(self, event=None):
+        """Export current history + stats to a CSV file chosen by the user."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            from datetime import datetime
+        except Exception as e:
+            logging.error(f"Could not open file dialog: {e}")
+            print("Export failed: tkinter file dialog not available.")
+            return
+
+        root = tk.Tk()
+        root.withdraw()
+
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        mode = "SIM" if self.config.simulate else "HW"
+        default_name = f"intune_debug_{mode}_{ts}.csv"
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile=default_name,
+            title="Save Intune Debug Log",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        root.destroy()
+
+        if not filepath:
+            logging.info("Export cancelled by user")
+            return
+
+        try:
+            with open(filepath, "w", encoding="utf-8", newline="") as f:
+                # Header / metadata
+                f.write("# Intune Debug Export\n")
+                f.write(f"# Generated: {datetime.now().isoformat()}\n")
+                f.write(f"# Mode: {'SIMULATION' if self.config.simulate else 'REAL HARDWARE'}\n")
+                f.write(f"# Port: {self.config.port if not self.config.simulate else 'N/A'}\n")
+                f.write(f"# History window at capture: {self.max_points / POINTS_PER_SECOND:.1f} seconds\n")
+                f.write(f"# Samples in buffer: {len(self.history)}\n")
+                f.write("#\n")
+                f.write("# === Current Session Stats ===\n")
+                s = self.stats
+                f.write(f"# Duration: {s.duration:.1f}s\n")
+                f.write(f"# Total samples: {s.total_samples}\n")
+                f.write(f"# In tune (<{IN_TUNE_THRESHOLD_CENTS}¢): {s.pct_in_tune:.2f}%\n")
+                f.write(f"# Mean |dev|: {s.mean_abs_cents:.2f}¢\n")
+                f.write(f"# Max dev: {s.max_deviation:.2f}¢\n")
+                f.write("#\n")
+                f.write("# Columns: wall_time_iso, relative_time_s, note, cents, confidence, y_pos\n")
+                f.write("# confidence: detector probability (0-1) when available, empty if unknown\n")
+                f.write("\n")
+
+                # CSV header
+                f.write("wall_time_iso,relative_time_s,note,cents,confidence,y_pos\n")
+
+                if len(self.history) == 0:
+                    f.write("# (no data in history buffer at time of export)\n")
+                else:
+                    t0 = self.history[0].timestamp
+                    for sample in self.history:
+                        rel = sample.timestamp - t0
+                        conf_str = f"{sample.confidence:.4f}" if sample.confidence is not None else ""
+                        iso = datetime.fromtimestamp(sample.timestamp).isoformat()
+                        f.write(f"{iso},{rel:.4f},{sample.note},{sample.cents:.2f},{conf_str},{sample.y_pos:.4f}\n")
+
+            logging.info(f"Debug log exported to: {filepath}")
+            print(f"\n[EXPORT] Debug log saved to: {filepath}")
+
+        except Exception as e:
+            logging.error(f"Failed to write debug log: {e}")
+            print(f"Export failed: {e}")
 
     def _on_key(self, event):
         if event.key == " " or event.key == "p":
             self._toggle_pause()
         elif event.key == "c":
             self._clear_history()
+        elif event.key == "e":
+            self._export_debug_log()
         elif event.key == "q" or event.key == "escape":
             plt.close(self.fig)
         elif event.key == "r":
@@ -645,6 +823,75 @@ class IntuneVisualizer:
     def _on_close(self, event):
         logging.info("Window closed — shutting down...")
         self.stop_event.set()
+
+    # -------------------------------------------------------------------------
+    # CROSSHAIR / HOVER INSPECTION (mainly useful when paused)
+    # -------------------------------------------------------------------------
+
+    def _on_mouse_move(self, event):
+        """Show crosshair + value readout when mouse is over the main plot (best when paused)."""
+        if event.inaxes != self.ax_main:
+            self._hide_crosshair()
+            return
+
+        # Only show helpful crosshair when paused (user's stated use case)
+        if not self.paused or len(self.history) < 2:
+            self._hide_crosshair()
+            return
+
+        x = event.xdata
+        if x is None:
+            self._hide_crosshair()
+            return
+
+        # Map mouse x back to index in history (right-aligned layout)
+        n = len(self.history)
+        x_start = self.max_points - n
+        idx = int(round(x - x_start))
+        idx = max(0, min(idx, n - 1))
+
+        sample = list(self.history)[idx]   # deque -> list for indexing
+
+        # Seconds ago (relative to newest sample in buffer)
+        seconds_ago = (self.max_points - (x_start + idx)) / POINTS_PER_SECOND
+
+        # Update crosshair lines
+        self.crosshair_v.set_xdata([x_start + idx, x_start + idx])
+        self.crosshair_v.set_visible(True)
+
+        self.crosshair_h.set_ydata([sample.y_pos, sample.y_pos])
+        self.crosshair_h.set_visible(True)
+
+        # Build nice hover text
+        conf_str = f"{sample.confidence:.2f}" if sample.confidence is not None else "—"
+        sign = "+" if sample.cents >= 0 else ""
+        text = (f"t=-{seconds_ago:.2f}s  |  {sample.note}  "
+                f"{sign}{sample.cents:.1f}¢  |  conf={conf_str}")
+
+        self.hover_text.set_text(text)
+        self.hover_text.set_visible(True)
+
+        # Redraw just the affected artists (cheap enough)
+        self.fig.canvas.draw_idle()
+
+    def _on_axes_leave(self, event):
+        """Hide crosshair when mouse leaves the main plot area."""
+        self._hide_crosshair()
+
+    def _hide_crosshair(self):
+        changed = False
+        if self.crosshair_v and self.crosshair_v.get_visible():
+            self.crosshair_v.set_visible(False)
+            changed = True
+        if self.crosshair_h and self.crosshair_h.get_visible():
+            self.crosshair_h.set_visible(False)
+            changed = True
+        if self.hover_text and self.hover_text.get_visible():
+            self.hover_text.set_visible(False)
+            changed = True
+
+        if changed:
+            self.fig.canvas.draw_idle()
 
     # -------------------------------------------------------------------------
     # ANIMATION & LIFECYCLE
@@ -679,7 +926,9 @@ class IntuneVisualizer:
         else:
             print(f"  Serial: {self.config.port} @ {self.config.baud} baud")
         print(f"  History window: {self.config.history_sec:.1f} seconds")
-        print("  Shortcuts: SPACE=pause/resume, C=clear, R=reset stats, Q=quit")
+        print("  Shortcuts: SPACE=pause/resume, C=clear, E=export, R=reset stats, Q=quit")
+        print("  Layout: Top = Alto Clef staff | Bottom = Zoomed cents view (±25¢, green = ±5¢ in tune)")
+        print("  Tip: Pause + hover for crosshairs to measure small errors and glitch duration")
         print("=" * 60 + "\n")
 
         self._start_reader()
