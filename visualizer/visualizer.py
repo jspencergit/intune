@@ -309,7 +309,7 @@ class SerialReader:
                     # For real acoustic input, skip very low-confidence readings,
                     # BUT always accept the explicit silence/rest marker "---"
                     is_silence = (note and note.strip() == "---")
-                    if is_silence or confidence is None or confidence > 0.25:
+                    if is_silence or confidence is None or confidence > 0.10:
                         sample = PitchSample(
                             timestamp=time.time(),
                             note=note,
@@ -729,6 +729,8 @@ class IntuneVisualizer:
         else:
             sign = "+" if cents >= 0 else ""
             text = f"{note}   {sign}{cents:.1f}¢"
+            if sample.level is not None:
+                text += f"  lvl={sample.level:.2f}"
 
         if note.strip() == "---":
             color = "#8888aa"
@@ -739,7 +741,9 @@ class IntuneVisualizer:
 
         # Status line
         age = time.time() - sample.timestamp
-        if age > 1.5:
+        if note.strip() == "---":
+            status = f"Silence (rest)  lvl={sample.level:.3f}" if sample.level is not None else "Silence (rest)"
+        elif age > 1.5:
             status = f"Last reading: {age:.1f}s ago"
         else:
             status = "Receiving data ✓"

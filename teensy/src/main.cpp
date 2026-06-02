@@ -52,10 +52,9 @@ void setup() {
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
   Serial.println("=== Constant-rate output (40 Hz). Silence sent as '---' for rests/rhythm practice. ===");
   
-  // NoteFrequency (YIN-based). For real acoustic viola through INMP441,
-  // a lower threshold often works better (more detections, we gate on level above).
-  // Experiment: try 0.4 – 0.55
-  notefreq1.begin(0.45);
+  // NoteFrequency (YIN-based). For real acoustic input (speaker or instrument),
+  // start with a fairly low threshold. We still gate output on level below.
+  notefreq1.begin(0.30);
 }
 
 void loop() {
@@ -123,7 +122,19 @@ void loop() {
       haveYIN = (yinFreq > 100.0f && yinProb > 0.15f);
     }
 
-    if (haveYIN && level > 0.015) {
+    // Periodic debug so you can see actual numbers on serial monitor when playing
+    // (lines starting with DEBUG are ignored by the visualizer)
+    static uint32_t lastDebug = 0;
+    if (millis() - lastDebug > 250) {
+      lastDebug = millis();
+      Serial.printf("DEBUG level=%.4f prob=%.2f freq=%.1f\n", level, yinProb, yinFreq);
+    }
+
+    // Use a low level threshold for now so speaker playback of recordings is detected.
+    // Once you switch to actual instrument, you can raise this (e.g. 0.01-0.05).
+    const float LEVEL_THRESHOLD = 0.001;
+
+    if (haveYIN && level > LEVEL_THRESHOLD) {
       // We have a sounding note
       float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
       int midiNote = round(midiFloat);
@@ -131,7 +142,7 @@ void loop() {
       Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), noteToName(midiNote), cents, yinProb, level);
     } else {
       // Silence / rest / below threshold — still send at constant rate
-      // Special marker " --- " tells the visualizer this is a rest.
+      // Special marker "---" tells the visualizer this is a rest.
       Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
     }
   }
