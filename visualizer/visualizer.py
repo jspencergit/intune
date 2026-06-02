@@ -103,12 +103,13 @@ class Config:
 @dataclass
 class PitchSample:
     """A single pitch measurement."""
-    timestamp: float
+    timestamp: float  # wall time on arrival (fallback)
     note: str
     cents: float
     y_pos: float
     confidence: Optional[float] = None   # From 4th field (YIN probability, etc.)
     level: Optional[float] = None        # From 5th field (0-1 mic peak level) when available
+    teensy_ts: Optional[float] = None    # millis() from Teensy for accurate time base
 
 
 @dataclass
@@ -287,6 +288,14 @@ class SerialReader:
                 if note is not None and cents is not None:
                     logging.debug(f"  → Parsed successfully: note={note}, cents={cents}")
 
+                    # Parse teensy timestamp (first field, millis from Teensy)
+                    teensy_ts = None
+                    if len(parts) >= 1:
+                        try:
+                            teensy_ts = float(parts[0])
+                        except (ValueError, IndexError):
+                            pass
+
                     # Try to parse optional 4th field as confidence/probability
                     confidence = None
                     if len(parts) >= 4:
@@ -317,6 +326,7 @@ class SerialReader:
                             y_pos=pitch_to_y(note),
                             confidence=confidence,
                             level=level,
+                            teensy_ts=teensy_ts,
                         )
                         try:
                             self.out_queue.put_nowait(sample)
@@ -383,6 +393,7 @@ class Simulator:
                 cents=self.current_cents,
                 y_pos=self.base_y + (self.current_cents * 0.012),  # small visual movement
                 confidence=None,   # Simulation doesn't have real detector confidence
+                teensy_ts = time.time() * 1000,  # fake for sim
             )
             try:
                 self.out_queue.put_nowait(sample)
@@ -404,13 +415,19 @@ class IntuneVisualizer:
 
     def __init__(self, config: Config):
         self.config = config
-        self.max_points = max(MIN_HISTORY_POINTS, int(config.history_sec * POINTS_PER_SECOND))
+        self.max_points = 1200  # generous buffer for time-based view
 
         # Data
         self.history: Deque[PitchSample] = deque(maxlen=self.max_points)
         self.stats = Stats()
         self.paused = False
         self.last_data_time = 0.0
+
+        # Time base
+        self.bpm = 80.0
+        self.beats_visible = 4.0
+        self.latest_teensy_ts = 0.0
+        self.last_received_wall = 0.0
 
         # Threading
         self.data_queue: queue.Queue = queue.Queue(maxsize=500)
@@ -429,7 +446,9 @@ class IntuneVisualizer:
         self.current_text = None
         self.stats_text = None
         self.status_text = None
-        self.slider = None
+        self.slider = None  # legacy
+        self.bpm_slider = None
+        self.beats_slider = None
         self.pause_button = None
         self.clear_button = None
         self.export_button = None
@@ -596,14 +615,23 @@ class IntuneVisualizer:
         self.fig.canvas.mpl_connect("axes_leave_event", self._on_axes_leave)
 
     def _create_controls(self):
-        # History slider
-        ax_slider = self.fig.add_axes([0.22, 0.025, 0.42, 0.028])
-        self.slider = Slider(
-            ax_slider, "History (sec)", 1.5, 18.0,
-            valinit=self.config.history_sec, valstep=0.5,
+        # BPM slider (left)
+        ax_bpm = self.fig.add_axes([0.02, 0.025, 0.18, 0.028])
+        self.bpm_slider = Slider(
+            ax_bpm, "BPM", 40, 200,
+            valinit=self.bpm, valstep=1,
             color="#556688", handle_style={"facecolor": "#88aaff"}
         )
-        self.slider.on_changed(self._on_history_change)
+        self.bpm_slider.on_changed(self._on_bpm_change)
+
+        # Visible beats slider
+        ax_beats = self.fig.add_axes([0.22, 0.025, 0.42, 0.028])
+        self.beats_slider = Slider(
+            ax_beats, "Visible beats", 1, 16,
+            valinit=self.beats_visible, valstep=0.5,
+            color="#556688", handle_style={"facecolor": "#88aaff"}
+        )
+        self.beats_slider.on_changed(self._on_beats_change)
 
         # Pause button
         ax_pause = self.fig.add_axes([0.68, 0.025, 0.09, 0.038])
@@ -615,7 +643,7 @@ class IntuneVisualizer:
         self.clear_button = Button(ax_clear, "Clear", color="#2a2a55", hovercolor="#3a3a70")
         self.clear_button.on_clicked(self._clear_history)
 
-        # Export Debug Log button (new)
+        # Export Debug Log button
         ax_export = self.fig.add_axes([0.88, 0.025, 0.10, 0.038])
         self.export_button = Button(ax_export, "Export Log", color="#2a2a55", hovercolor="#3a3a70")
         self.export_button.on_clicked(self._export_debug_log)
@@ -637,6 +665,10 @@ class IntuneVisualizer:
                 self.history.append(sample)
                 self._update_stats(sample)
                 ingested += 1
+
+                if sample.teensy_ts:
+                    self.latest_teensy_ts = max(self.latest_teensy_ts, sample.teensy_ts)
+                    self.last_received_wall = time.time()
 
         if ingested:
             self.last_data_time = time.time()
@@ -667,21 +699,46 @@ class IntuneVisualizer:
             self._update_stats_display()
             return
 
-        # Right-align the trace (newest data at the right edge)
-        n = len(self.history)
-        x = np.arange(self.max_points - n, self.max_points)
+        # Time-based positioning locked to Teensy millis() for accurate beat time.
+        # Use wall-time extrapolation between arrivals for butter-smooth scrolling.
+        now_ts = self.latest_teensy_ts
+        if self.last_received_wall > 0:
+            elapsed = time.time() - self.last_received_wall
+            now_ts = self.latest_teensy_ts + elapsed * 1000.0
 
-        y = np.array([s.y_pos for s in self.history])
-        cents = np.array([s.cents for s in self.history])
+        visible_sec = self.beats_visible / (self.bpm / 60.0) if self.bpm > 0 else 4.0
 
-        # Small viz-side polish for steady notes: if we have a very short burst of silence (1-2 samples)
-        # surrounded by the same note, "fill" the y so the trace doesn't have annoying tiny dips.
-        # This does not affect the actual data or the zoomed view.
+        # Collect points in the visible window, x from time delta (newest at right)
+        timed = []
+        for s in self.history:
+            if s.teensy_ts is None:
+                continue
+            age = (now_ts - s.teensy_ts) / 1000.0
+            if age < 0 or age > visible_sec:
+                continue
+            x = self.max_points * (1.0 - age / visible_sec)
+            timed.append((x, s.y_pos, s.cents, s.note, s.confidence))
+
+        if len(timed) < 2:
+            self.lc.set_segments([])
+            self.glow_lc.set_segments([])
+            self.zoom_lc.set_segments([])
+            self._update_current_display(None)
+            self._update_stats_display()
+            return
+
+        x = np.array([t[0] for t in timed])
+        y = np.array([t[1] for t in timed])
+        cents = np.array([t[2] for t in timed])
+        notes = [t[3] for t in timed]
+        confs = [t[4] for t in timed]
+
+        # Small viz-side polish for steady notes
         for i in range(1, len(y)-1):
-            if (self.history[i].note and self.history[i].note.strip() == "---" and
-                self.history[i-1].note == self.history[i+1].note and
-                self.history[i-1].note and self.history[i-1].note.strip() != "---"):
-                y[i] = self.history[i-1].y_pos   # or average, but same is fine
+            if (notes[i] and notes[i].strip() == "---" and
+                notes[i-1] == notes[i+1] and
+                notes[i-1] and notes[i-1].strip() != "---"):
+                y[i] = timed[i-1][1]
 
         # Build segments for LineCollection
         points = np.column_stack((x, y)).reshape(-1, 1, 2)
@@ -692,7 +749,7 @@ class IntuneVisualizer:
         colors = []
         glow_colors = []
         for i, c in enumerate(cents):
-            note = self.history[i].note
+            note = notes[i]
             if note and note.strip() == "---":
                 # Silence/rest - gray, low alpha, will be drawn at the rest y position from pitch_to_y
                 alpha = 0.35
@@ -700,7 +757,7 @@ class IntuneVisualizer:
                 glow_colors.append((0.6, 0.6, 0.7, alpha * 0.3))
             else:
                 base = get_color(c)
-                conf = self.history[i].confidence
+                conf = confs[i]
                 alpha = 0.92 if conf is None else max(0.15, conf * 0.9)
                 # Simple hex to rgb (assumes #rrggbb)
                 r = int(base[1:3], 16) / 255.0
@@ -720,6 +777,19 @@ class IntuneVisualizer:
         zoom_segments = np.concatenate([zoom_points[:-1], zoom_points[1:]], axis=1)
         self.zoom_lc.set_segments(zoom_segments)
         self.zoom_lc.set_color(colors)
+
+        # Time-based x ticks in beats (newest on right)
+        beat_ticks = []
+        beat_labels = []
+        for b in range(0, -int(self.beats_visible) - 1, -1):
+            age_sec = (-b) / (self.bpm / 60.0)
+            xt = self.max_points * (1.0 - age_sec / visible_sec)
+            beat_ticks.append(xt)
+            beat_labels.append(str(b))
+        self.ax_main.set_xticks(beat_ticks)
+        self.ax_main.set_xticklabels(beat_labels)
+        self.ax_main.set_xlabel(f"Beats (BPM {int(self.bpm)})", fontsize=10, color=COLOR_TEXT_DIM, labelpad=6)
+        self.ax_main.axvline(self.max_points, color="#ffffff", lw=0.7, alpha=0.4)
 
         self._update_current_display(self.history[-1])
         self._update_stats_display()
@@ -778,20 +848,16 @@ class IntuneVisualizer:
     # CONTROLS & EVENTS
     # -------------------------------------------------------------------------
 
+    # History slider replaced by BPM / beats for musical time base.
+    # The old method is kept as no-op for compatibility.
     def _on_history_change(self, val: float):
-        new_max = max(MIN_HISTORY_POINTS, int(val * POINTS_PER_SECOND))
-        if new_max == self.max_points:
-            return
+        pass
 
-        # Resize history buffer
-        old_data = list(self.history)
-        self.max_points = new_max
-        self.history = deque(old_data[-new_max:], maxlen=new_max)
+    def _on_bpm_change(self, val: float):
+        self.bpm = float(val)
 
-        self.ax_main.set_xlim(0, new_max)
-        if self.ax_zoom is not None:
-            self.ax_zoom.set_xlim(0, new_max)
-        self.slider.valtext.set_text(f"{val:.1f}")
+    def _on_beats_change(self, val: float):
+        self.beats_visible = float(val)
 
     def _toggle_pause(self, event=None):
         self.paused = not self.paused
@@ -1004,10 +1070,10 @@ class IntuneVisualizer:
             print("  Mode: SIMULATION (no hardware required)")
         else:
             print(f"  Serial: {self.config.port} @ {self.config.baud} baud")
-        print(f"  History window: {self.config.history_sec:.1f} seconds")
+        print(f"  BPM: {self.bpm} | Visible beats: {self.beats_visible}")
         print("  Shortcuts: SPACE=pause/resume, C=clear, E=export, R=reset stats, Q=quit")
         print("  Layout: Top = Alto Clef staff (C3–F6) | Bottom = Zoomed ±25¢ view (green = ±5¢ in tune)")
-        print("  Tip: Gating on volume only. Above rest threshold: fresh YIN or held last good note (low conf = faded). Below: rest '---'. DEBUG on serial shows raw levels.")
+        print("  Tip: Set BPM and visible beats for musical time base. Scroll is time-locked to Teensy millis for smoothness. Gating on volume; low conf = faded trace.")
         print("=" * 60 + "\n")
 
         self._start_reader()
