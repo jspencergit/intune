@@ -73,7 +73,7 @@ python visualizer.py --port COM4 --baud 57600 --debug
 
 ## Hardware Expectations
 
-When using a real microphone (e.g. INMP441 I2S on Teensy), the firmware gates output on audio level and the visualizer filters low-confidence readings. This keeps the trace clean during silence.
+When using a real microphone (e.g. INMP441 I2S on Teensy), the firmware gates "rest" vs "note" purely on volume (peak level). Above rest threshold: sends detector output (fresh or held last good note) even with low confidence (visualizer fades trace). Below: explicit '---' rest + level. Always constant rate for smooth scrolling (newest on right), including rests for rhythm practice.
 
 The visualizer expects lines over serial in roughly this format:
 

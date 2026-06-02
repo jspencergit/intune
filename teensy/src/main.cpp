@@ -52,8 +52,8 @@ void setup() {
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
-  Serial.println("=== Constant-rate output (40 Hz). Gating on volume only: high vol = send detector output (even low conf), low vol = '---' rest. ===");
-  Serial.println("=== LEVEL_THRESHOLD very low for speaker tests. Use DEBUG lines to tune. ===");
+  Serial.println("=== Constant-rate output (40 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
+  Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. Tune via DEBUG. ===");
   
   // NoteFrequency (YIN-based). Low threshold so we get readings even on softer signals.
   // Gating is done purely on volume (level) below.
@@ -92,11 +92,14 @@ void loop() {
     }
 
     // Gate *only* on volume (level), as requested.
-    // Below threshold → send rest marker (for rhythm/rests).
-    // Above threshold → send whatever the detector produces right now (even low confidence).
-    // If no fresh YIN reading this tick but volume is still high, hold the last good reading
-    // so the trace stays steady instead of jumping to rest.
-    const float LEVEL_THRESHOLD = 0.0001;  // tuned for speaker; raise for real playing (e.g. 0.005+)
+    // Below rest_threshold → send rest marker (for rhythm/rests).
+    // Above rest_threshold → send whatever the detector produces (even low confidence).
+    // To prevent garbage "random notes" at the very end of a decaying note (when YIN locks on noise/harmonics with low level),
+    // we only accept *fresh* locks if level is above a higher "trust" threshold.
+    // Below trust but above rest: hold the previous good note (using current level).
+    // This way the trace stays on the correct steady note until the volume has clearly dropped.
+    const float REST_THRESHOLD = 0.001;     // below this = rest (tune with your DEBUG levels)
+    const float TRUST_FRESH_LOCK = 0.005;   // only trust a brand new YIN lock above this (prevents tail garbage)
 
     // Last good state for holding during high-volume periods
     static float last_freq = 0;
@@ -104,9 +107,9 @@ void loop() {
     static float last_cents = 0;
     static char last_note[8] = {0};
 
-    if (level > LEVEL_THRESHOLD) {
-      if (haveYIN) {
-        // Fresh reading above volume threshold: use it, even if its prob is low
+    if (level > REST_THRESHOLD) {
+      if (haveYIN && level > TRUST_FRESH_LOCK) {
+        // Fresh reading with sufficient volume for a trustworthy new lock: use it (even if its prob is somewhat low)
         float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
         int midiNote = round(midiFloat);
         float cents = (midiFloat - midiNote) * 100.0f;
@@ -121,15 +124,15 @@ void loop() {
 
         Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), last_note, last_cents, last_prob, level);
       } else if (last_freq > 0) {
-        // High volume but no fresh YIN reading this tick: hold last good to keep trace stable
+        // Volume is still high enough to be "sounding", but either no fresh YIN this tick or level too low for a new lock:
+        // hold the last good note so the trace stays steady on the correct pitch.
         Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), last_note, last_cents, last_prob, level);
       } else {
-        // High volume but never had a good lock yet
+        // High volume but never locked yet
         Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
       }
     } else {
-      // Below volume threshold → explicit rest
-      // (we do not clear last_good, so when volume returns it can resume the previous note quickly)
+      // Below rest threshold → explicit rest (and keep last_good so it can resume quickly if volume returns)
       Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
     }
   }

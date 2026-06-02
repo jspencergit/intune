@@ -306,8 +306,8 @@ class SerialReader:
                         except (ValueError, IndexError):
                             pass
 
-                    # Silence/rest is explicitly marked by "---" from firmware (volume-based gate).
-                    # When volume is high we accept even low-confidence detector output so the raw behavior is visible.
+                    # Silence/rest is explicitly marked by "---" from firmware when volume below rest threshold.
+                    # Above threshold we accept fresh or held detector output (low conf just means faded trace).
                     is_silence = (note and note.strip() == "---")
                     if is_silence or confidence is None or confidence > 0.02 or (level is not None and level > 0.001):
                         sample = PitchSample(
@@ -1007,7 +1007,7 @@ class IntuneVisualizer:
         print(f"  History window: {self.config.history_sec:.1f} seconds")
         print("  Shortcuts: SPACE=pause/resume, C=clear, E=export, R=reset stats, Q=quit")
         print("  Layout: Top = Alto Clef staff (C3–F6) | Bottom = Zoomed ±25¢ view (green = ±5¢ in tune)")
-        print("  Tip: Gating is on volume (level). Above threshold we show whatever the detector reports (low conf = faded trace).")
+        print("  Tip: Gating on volume only. Above rest threshold: fresh YIN or held last good note (low conf = faded). Below: rest '---'. DEBUG on serial shows raw levels.")
         print("=" * 60 + "\n")
 
         self._start_reader()

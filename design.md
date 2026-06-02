@@ -103,9 +103,11 @@ G3,8
 - Primary detector: `AudioAnalyzeNoteFrequency` (YIN-based).
 - Output is strictly constant rate (~40 Hz) for continuous right-aligned scrolling (important for rhythm + rests).
 - Rest/silence gating is done **purely on volume** (AudioAnalyzePeak level):
-  - Above threshold: forward whatever the YIN detector reports (note + cents + its native probability + level). Low-confidence periods are still sent and will appear faded in the visualizer.
-  - Below threshold: send explicit `---` rest marker + the level value.
-- This allows seeing the detector's raw behavior (including low conf) on actual sounding notes, while providing clean rest indication for timing practice.
+  - Above rest threshold: send fresh YIN if available (with its native prob) or hold the last good note (to avoid gaps from detector update rate). Low-conf periods appear faded.
+  - Below rest threshold: explicit `---` rest marker + level.
+  - A higher "trust fresh lock" threshold prevents accepting garbage new locks on the decaying tail of a note (avoids "stuck on random note" at end).
+- Constant rate output (~40 Hz) for continuous right-aligned scrolling (newest on right), so rests are visible for rhythm practice.
+- This lets you see raw detector output (wobbly/low conf = faded) on sounding notes while cleanly marking true low-volume/rest periods.
 - Full practical viola range supported in visualizer (C3–F6).
 - Visualizer fades trace alpha based on reported confidence and has special rendering for `---` rests.
 
