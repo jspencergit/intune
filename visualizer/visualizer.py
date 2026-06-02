@@ -306,10 +306,10 @@ class SerialReader:
                         except (ValueError, IndexError):
                             pass
 
-                    # For real acoustic input, skip very low-confidence readings,
-                    # BUT always accept the explicit silence/rest marker "---"
+                    # Silence/rest is explicitly marked by "---" from firmware (volume-based gate).
+                    # When volume is high we accept even low-confidence detector output so the raw behavior is visible.
                     is_silence = (note and note.strip() == "---")
-                    if is_silence or confidence is None or confidence > 0.05:
+                    if is_silence or confidence is None or confidence > 0.02 or (level is not None and level > 0.001):
                         sample = PitchSample(
                             timestamp=time.time(),
                             note=note,
@@ -1007,7 +1007,7 @@ class IntuneVisualizer:
         print(f"  History window: {self.config.history_sec:.1f} seconds")
         print("  Shortcuts: SPACE=pause/resume, C=clear, E=export, R=reset stats, Q=quit")
         print("  Layout: Top = Alto Clef staff (C3–F6) | Bottom = Zoomed ±25¢ view (green = ±5¢ in tune)")
-        print("  Tip: With real mic, low-confidence readings are filtered. Pause + hover for crosshairs.")
+        print("  Tip: Gating is on volume (level). Above threshold we show whatever the detector reports (low conf = faded trace).")
         print("=" * 60 + "\n")
 
         self._start_reader()

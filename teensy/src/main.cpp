@@ -50,12 +50,12 @@ void setup() {
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
-  Serial.println("=== Constant-rate output (40 Hz). Silence sent as '---' for rests/rhythm practice. ===");
-  Serial.println("=== LEVEL_THRESHOLD set low (0.0002) for soft speaker playback. Raise for real instrument. ===");
+  Serial.println("=== Constant-rate output (40 Hz). Gating on volume only: high vol = send detector output (even low conf), low vol = '---' rest. ===");
+  Serial.println("=== LEVEL_THRESHOLD very low for speaker tests. Use DEBUG lines to tune. ===");
   
-  // NoteFrequency (YIN-based). For soft speaker playback testing, we use a quite low threshold.
-  // The level gate below will still filter true silence.
-  notefreq1.begin(0.20);
+  // NoteFrequency (YIN-based). Low threshold so we get readings even on softer signals.
+  // Gating is done purely on volume (level) below.
+  notefreq1.begin(0.15);
 }
 
 void loop() {
@@ -120,7 +120,7 @@ void loop() {
     if (notefreq1.available()) {
       yinFreq = notefreq1.read();
       yinProb = notefreq1.probability();
-      haveYIN = (yinFreq > 80.0f && yinProb > 0.08f);
+      haveYIN = true;   // we take whatever YIN gives when volume is high enough
     }
 
     // Periodic debug so you can see actual numbers on serial monitor when playing
@@ -131,73 +131,26 @@ void loop() {
       Serial.printf("DEBUG level=%.4f prob=%.2f freq=%.1f\n", level, yinProb, yinFreq);
     }
 
-    // Hysteresis / state machine + hold-last-good to avoid rapid flipping and "gaps"
-    // on marginal/soft signals (e.g. speaker playback of mezzo-piano recordings).
-    // Once locked on a note we continue sending the last good note+cents for a while
-    // even if the current sample is marginal. Only switch to explicit rest after
-    // sustained low signal. This keeps the trace steady for a "steady note" while
-    // still providing clear rest markers for rhythm practice.
-    static bool is_sounding = false;
-    static uint32_t consecutive_good = 0;
-    static uint32_t consecutive_low = 0;
+    // Gate *only* on volume (level), as requested.
+    // Below threshold → send rest marker (for rhythm/rests).
+    // Above threshold → send whatever the detector produces (even low confidence).
+    // This way low-confidence periods on real notes are still shown (will appear faded in visualizer).
+    const float LEVEL_THRESHOLD = 0.0001;  // very low for speaker testing; raise for direct instrument
 
-    // Remember last good reading so we can "hold" it during brief dips
-    static float last_good_freq = 0;
-    static float last_good_prob = 0;
-    static float last_good_level = 0;
-    static char last_good_note_buf[8] = {0};
-    static float last_good_cents = 0;
-
-    const uint32_t MIN_GOOD_TO_LOCK = 2;
-    const uint32_t MIN_LOW_TO_REST = 5;   // a bit more sticky
-
-    bool this_sample_good = (haveYIN && level > 0.0005);
-
-    if (this_sample_good) {
-      consecutive_good++;
-      consecutive_low = 0;
-
-      // update last good
-      last_good_freq = yinFreq;
-      last_good_prob = yinProb;
-      last_good_level = level;
-
-      // compute note name/cents once for holding
-      float mf = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
-      int mn = round(mf);
-      last_good_cents = (mf - mn) * 100.0f;
-      // copy note name
-      const char* nm = noteToName(mn);
-      strncpy(last_good_note_buf, nm, sizeof(last_good_note_buf)-1);
-      last_good_note_buf[sizeof(last_good_note_buf)-1] = 0;
-
-      if (!is_sounding && consecutive_good >= MIN_GOOD_TO_LOCK) {
-        is_sounding = true;
-      }
-    } else {
-      consecutive_low++;
-      consecutive_good = 0;
-      if (is_sounding && consecutive_low >= MIN_LOW_TO_REST) {
-        is_sounding = false;
-      }
-    }
-
-    if (is_sounding) {
-      // Send either the fresh reading or the held last good one
-      float use_freq = haveYIN ? yinFreq : last_good_freq;
-      float use_prob = haveYIN ? yinProb : last_good_prob;
-      float use_level = haveYIN ? level : last_good_level;
-      const char* use_note = haveYIN ? noteToName(round(12.0f * log2(yinFreq / 440.0f) + 69.0f)) : last_good_note_buf;
-      float use_cents = haveYIN ? (12.0f * log2(yinFreq / 440.0f) + 69.0f - round(12.0f * log2(yinFreq / 440.0f) + 69.0f)) * 100.0f : last_good_cents;
-
-      // If we don't have a valid held note yet, fall back to silence
-      if (use_note[0] == 0) {
-        Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
+    if (level > LEVEL_THRESHOLD) {
+      if (haveYIN && yinFreq > 50.0f) {
+        // Above volume threshold: send the pitch reading no matter the confidence
+        float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
+        int midiNote = round(midiFloat);
+        float cents = (midiFloat - midiNote) * 100.0f;
+        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), noteToName(midiNote), cents, yinProb, level);
       } else {
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), use_note, use_cents, use_prob, use_level);
+        // High volume but no usable pitch this tick → treat as rest for now
+        // (or could hold last note; using rest keeps it simple and explicit)
+        Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
       }
     } else {
-      // Sustained rest
+      // Below volume threshold → explicit rest/silence marker
       Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
     }
   }
