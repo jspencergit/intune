@@ -674,6 +674,15 @@ class IntuneVisualizer:
         y = np.array([s.y_pos for s in self.history])
         cents = np.array([s.cents for s in self.history])
 
+        # Small viz-side polish for steady notes: if we have a very short burst of silence (1-2 samples)
+        # surrounded by the same note, "fill" the y so the trace doesn't have annoying tiny dips.
+        # This does not affect the actual data or the zoomed view.
+        for i in range(1, len(y)-1):
+            if (self.history[i].note and self.history[i].note.strip() == "---" and
+                self.history[i-1].note == self.history[i+1].note and
+                self.history[i-1].note and self.history[i-1].note.strip() != "---"):
+                y[i] = self.history[i-1].y_pos   # or average, but same is fine
+
         # Build segments for LineCollection
         points = np.column_stack((x, y)).reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
