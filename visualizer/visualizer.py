@@ -107,7 +107,8 @@ class PitchSample:
     note: str
     cents: float
     y_pos: float
-    confidence: Optional[float] = None   # From 4th field (YIN probability, FFT confidence, etc.)
+    confidence: Optional[float] = None   # From 4th field (YIN probability, etc.)
+    level: Optional[float] = None        # From 5th field (0-1 mic peak level) when available
 
 
 @dataclass
@@ -280,18 +281,26 @@ class SerialReader:
                 if note is not None and cents is not None:
                     logging.debug(f"  → Parsed successfully: note={note}, cents={cents}")
 
-                    # Try to parse optional 4th field as confidence/probability (0-1 or 0-100)
+                    # Try to parse optional 4th field as confidence/probability
                     confidence = None
                     if len(parts) >= 4:
                         try:
                             c4 = float(parts[3])
-                            # Normalize: if > 1.0 assume percentage, else keep as-is
                             confidence = c4 / 100.0 if c4 > 1.0 else c4
                             confidence = max(0.0, min(1.0, confidence))
                         except (ValueError, IndexError):
                             pass
 
-                    # For real acoustic input, skip very low-confidence readings to keep the trace clean
+                    # Optional 5th field = level (0-1)
+                    level = None
+                    if len(parts) >= 5:
+                        try:
+                            level = float(parts[4])
+                            level = max(0.0, min(1.0, level))
+                        except (ValueError, IndexError):
+                            pass
+
+                    # For real acoustic input, skip very low-confidence readings
                     if confidence is None or confidence > 0.25:
                         sample = PitchSample(
                             timestamp=time.time(),
@@ -299,6 +308,7 @@ class SerialReader:
                             cents=cents,
                             y_pos=pitch_to_y(note),
                             confidence=confidence,
+                            level=level,
                         )
                         try:
                             self.out_queue.put_nowait(sample)

@@ -128,9 +128,9 @@ void loop() {
       int midiNote = round(midiFloat);
       float cents = (midiFloat - midiNote) * 100.0f;
 
-      // Primary output for the visualizer. 4th field = YIN probability.
-      // We could append level here later if the visualizer parser is extended.
-      Serial.printf("%lu,%s,%+.1f,%.2f\n", millis(), noteToName(midiNote), cents, yinProb);
+      // Primary output. Format: timestamp,Note,Cents,probability[,level]
+      // Level (0-1) is useful for the visualizer to gate or show volume.
+      Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), noteToName(midiNote), cents, yinProb, level);
     }
   }
 }
