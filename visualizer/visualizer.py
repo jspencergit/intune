@@ -309,7 +309,7 @@ class SerialReader:
                     # For real acoustic input, skip very low-confidence readings,
                     # BUT always accept the explicit silence/rest marker "---"
                     is_silence = (note and note.strip() == "---")
-                    if is_silence or confidence is None or confidence > 0.10:
+                    if is_silence or confidence is None or confidence > 0.05:
                         sample = PitchSample(
                             timestamp=time.time(),
                             note=note,

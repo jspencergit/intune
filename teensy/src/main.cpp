@@ -51,10 +51,11 @@ void setup() {
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
   Serial.println("=== Constant-rate output (40 Hz). Silence sent as '---' for rests/rhythm practice. ===");
+  Serial.println("=== LEVEL_THRESHOLD set low (0.0002) for soft speaker playback. Raise for real instrument. ===");
   
-  // NoteFrequency (YIN-based). For real acoustic input (speaker or instrument),
-  // start with a fairly low threshold. We still gate output on level below.
-  notefreq1.begin(0.30);
+  // NoteFrequency (YIN-based). For soft speaker playback testing, we use a quite low threshold.
+  // The level gate below will still filter true silence.
+  notefreq1.begin(0.20);
 }
 
 void loop() {
@@ -119,7 +120,7 @@ void loop() {
     if (notefreq1.available()) {
       yinFreq = notefreq1.read();
       yinProb = notefreq1.probability();
-      haveYIN = (yinFreq > 100.0f && yinProb > 0.15f);
+      haveYIN = (yinFreq > 80.0f && yinProb > 0.08f);
     }
 
     // Periodic debug so you can see actual numbers on serial monitor when playing
@@ -130,9 +131,10 @@ void loop() {
       Serial.printf("DEBUG level=%.4f prob=%.2f freq=%.1f\n", level, yinProb, yinFreq);
     }
 
-    // Use a low level threshold for now so speaker playback of recordings is detected.
-    // Once you switch to actual instrument, you can raise this (e.g. 0.01-0.05).
-    const float LEVEL_THRESHOLD = 0.001;
+    // Significantly lowered for soft speaker playback of music files.
+    // Snaps and loud chimes trigger easily; soft music now should too.
+    // Raise this (e.g. 0.005 - 0.05) when using a real instrument mic'd directly.
+    const float LEVEL_THRESHOLD = 0.0002;
 
     if (haveYIN && level > LEVEL_THRESHOLD) {
       // We have a sounding note
