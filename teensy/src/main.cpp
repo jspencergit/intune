@@ -80,7 +80,7 @@ void loop() {
     if (notefreq1.available()) {
       yinFreq = notefreq1.read();
       yinProb = notefreq1.probability();
-      haveYIN = true;   // we take whatever YIN gives when volume is high enough
+      haveYIN = (yinFreq > 50.0f);  // accept as long as it gives a freq; we'll use its prob as-is
     }
 
     // Periodic debug so you can see actual numbers on serial monitor when playing
@@ -93,24 +93,43 @@ void loop() {
 
     // Gate *only* on volume (level), as requested.
     // Below threshold → send rest marker (for rhythm/rests).
-    // Above threshold → send whatever the detector produces (even low confidence).
-    // This way low-confidence periods on real notes are still shown (will appear faded in visualizer).
-    const float LEVEL_THRESHOLD = 0.0001;  // very low for speaker testing; raise for direct instrument
+    // Above threshold → send whatever the detector produces right now (even low confidence).
+    // If no fresh YIN reading this tick but volume is still high, hold the last good reading
+    // so the trace stays steady instead of jumping to rest.
+    const float LEVEL_THRESHOLD = 0.0001;  // tuned for speaker; raise for real playing (e.g. 0.005+)
+
+    // Last good state for holding during high-volume periods
+    static float last_freq = 0;
+    static float last_prob = 0;
+    static float last_cents = 0;
+    static char last_note[8] = {0};
 
     if (level > LEVEL_THRESHOLD) {
-      if (haveYIN && yinFreq > 50.0f) {
-        // Above volume threshold: send the pitch reading no matter the confidence
+      if (haveYIN) {
+        // Fresh reading above volume threshold: use it, even if its prob is low
         float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
         int midiNote = round(midiFloat);
         float cents = (midiFloat - midiNote) * 100.0f;
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), noteToName(midiNote), cents, yinProb, level);
+
+        // update last good
+        last_freq = yinFreq;
+        last_prob = yinProb;
+        last_cents = cents;
+        const char* nm = noteToName(midiNote);
+        strncpy(last_note, nm, sizeof(last_note)-1);
+        last_note[sizeof(last_note)-1] = '\0';
+
+        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), last_note, last_cents, last_prob, level);
+      } else if (last_freq > 0) {
+        // High volume but no fresh YIN reading this tick: hold last good to keep trace stable
+        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), last_note, last_cents, last_prob, level);
       } else {
-        // High volume but no usable pitch this tick → treat as rest for now
-        // (or could hold last note; using rest keeps it simple and explicit)
+        // High volume but never had a good lock yet
         Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
       }
     } else {
-      // Below volume threshold → explicit rest/silence marker
+      // Below volume threshold → explicit rest
+      // (we do not clear last_good, so when volume returns it can resume the previous note quickly)
       Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
     }
   }
