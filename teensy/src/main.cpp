@@ -48,7 +48,7 @@ const char* noteToName(int midi);
 void setup() {
   Serial.begin(115200);
   delay(1500);
-  AudioMemory(120);  // Higher for real I2S mic + FFT + NoteFrequency
+  AudioMemory(80);   // For I2S mic + NoteFrequency + Peak
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");

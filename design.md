@@ -100,14 +100,16 @@ G3,8
 
 **Current state (real mic input, June 2026):**
 - Using INMP441 I2S digital microphone module connected directly to Teensy 4.1.
-- Primary detector: `AudioAnalyzeNoteFrequency` (YIN-based) for robust monophonic pitch on acoustic input.
-- Secondary (for debugging): FFT1024 peak + interpolation still running in parallel, but output is secondary.
-- Output format: `timestamp,Note,Cents,probability` at ~40 Hz (YIN primary).
-- AudioMemory set to 120.
-- NoteFrequency threshold currently 0.65 (can be tuned lower for acoustic signals).
+- Primary detector: `AudioAnalyzeNoteFrequency` (YIN-based).
+- Output is strictly constant rate (~40 Hz) for continuous right-aligned scrolling (important for rhythm + rests).
+- Rest/silence gating is done **purely on volume** (AudioAnalyzePeak level):
+  - Above threshold: forward whatever the YIN detector reports (note + cents + its native probability + level). Low-confidence periods are still sent and will appear faded in the visualizer.
+  - Below threshold: send explicit `---` rest marker + the level value.
+- This allows seeing the detector's raw behavior (including low conf) on actual sounding notes, while providing clean rest indication for timing practice.
 - Full practical viola range supported in visualizer (C3–F6).
+- Visualizer fades trace alpha based on reported confidence and has special rendering for `---` rests.
 
-**Recent focus:** Getting real acoustic input working end-to-end and expanding the staff view to cover the instrument's full range.
+**Recent focus:** Stabilizing real acoustic input from speaker tests, implementing volume-based (not confidence-based) rest gating, and ensuring constant-rate data for rhythm visualization.
 
 **PlatformIO config:** Standard `teensy41` + Arduino framework.
 
