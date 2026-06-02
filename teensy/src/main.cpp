@@ -21,11 +21,15 @@
 /*
  * Intune Teensy Pitch Detection - Real I2S Mic Version
  *
- * Primary detector: AudioAnalyzeNoteFrequency (YIN-based) – good for acoustic instruments.
- * Secondary (debug): Basic FFT1024 peak tracking (still running but not primary output).
+ * Primary detector: AudioAnalyzeNoteFrequency (YIN-based).
+ *
+ * Output is constant rate (~40 Hz).
+ * Gating for "rest" (--- marker) is done purely on mic level/volume.
+ * When volume is sufficient, we output whatever the YIN detector reports
+ * (including periods of low confidence, which the visualizer will show faded).
  *
  * Serial output format (for visualizer):
- *   timestamp,Note,Cents,probability
+ *   timestamp,Note,Cents,probability,level
  *
  * To run:
  *   - Flash to Teensy 4.1 with INMP441 wired (see pinout above)
@@ -33,13 +37,11 @@
  */
 
 AudioInputI2S             i2s1;          // Real microphone input
-AudioAnalyzeFFT1024       fft1024;
 AudioAnalyzeNoteFrequency notefreq1;
-AudioAnalyzePeak          peak1;           // For amplitude / "note sounding" detection
+AudioAnalyzePeak          peak1;           // For volume-based rest gating
 
-AudioConnection patchCord1(i2s1, 0, fft1024, 0);
-AudioConnection patchCord2(i2s1, 0, notefreq1, 0);
-AudioConnection patchCord3(i2s1, 0, peak1, 0);
+AudioConnection patchCord1(i2s1, 0, notefreq1, 0);
+AudioConnection patchCord2(i2s1, 0, peak1, 0);
 
 const char* noteToName(int midi);
 
@@ -59,51 +61,9 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t lastAnalysis = 0;
   static uint32_t lastOutput = 0;
-  
-  static float smoothedFreq = 440.0;
-  static float candidateFreq = 440.0;
-  static int confidence = 0;
 
   // Real I2S microphone input is now live - no synthetic tones
-
-  // High-rate analysis
-  if (millis() - lastAnalysis > 9) {
-    lastAnalysis = millis();
-
-    if (fft1024.available()) {
-      float maxMag = 0;
-      int maxBin = 0;
-      
-      for (int i = 3; i < 280; i++) {
-        float mag = fft1024.read(i);
-        if (mag > maxMag) {
-          maxMag = mag;
-          maxBin = i;
-        }
-      }
-
-      if (maxMag > 0.055f) {
-        float binFreq = maxBin * (AUDIO_SAMPLE_RATE_EXACT / 1024.0f);
-        float magL = fft1024.read(maxBin - 1);
-        float magR = fft1024.read(maxBin + 1);
-        float delta = (magR - magL) / (2.0f * (2.0f * maxMag - magL - magR + 1e-8f));
-        float freq = binFreq + delta * (AUDIO_SAMPLE_RATE_EXACT / 1024.0f);
-
-        // Confidence-based tracking
-        if (abs(freq - candidateFreq) < 15.0f) {
-          confidence = min(confidence + 3, 25);
-        } else {
-          candidateFreq = freq;
-          confidence = 0;
-        }
-
-        float alpha = (confidence > 10) ? 0.82f : 0.40f;
-        smoothedFreq = smoothedFreq * alpha + candidateFreq * (1.0f - alpha);
-      }
-    }
-  }
 
   // Fixed-rate output (~40 Hz) — always send so the visualizer scrolls continuously
   // like a right-aligned "oscilloscope". Essential for rhythm practice (rests are part of time).
