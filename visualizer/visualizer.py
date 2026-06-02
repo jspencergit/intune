@@ -291,18 +291,20 @@ class SerialReader:
                         except (ValueError, IndexError):
                             pass
 
-                    sample = PitchSample(
-                        timestamp=time.time(),
-                        note=note,
-                        cents=cents,
-                        y_pos=pitch_to_y(note),
-                        confidence=confidence,
-                    )
-                    try:
-                        self.out_queue.put_nowait(sample)
-                        self.last_success = time.time()
-                    except queue.Full:
-                        pass
+                    # For real acoustic input, skip very low-confidence readings to keep the trace clean
+                    if confidence is None or confidence > 0.25:
+                        sample = PitchSample(
+                            timestamp=time.time(),
+                            note=note,
+                            cents=cents,
+                            y_pos=pitch_to_y(note),
+                            confidence=confidence,
+                        )
+                        try:
+                            self.out_queue.put_nowait(sample)
+                            self.last_success = time.time()
+                        except queue.Full:
+                            pass
                 else:
                     logging.debug(f"  → Failed to parse note+cents from parts={parts}")
 
@@ -654,12 +656,25 @@ class IntuneVisualizer:
         points = np.column_stack((x, y)).reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
-        colors = [get_color(c) for c in cents]
+        # Build rgba colors so we can fade the trace on low confidence (very useful with real mic).
+        colors = []
+        glow_colors = []
+        for i, c in enumerate(cents):
+            base = get_color(c)
+            conf = self.history[i].confidence
+            alpha = 0.92 if conf is None else max(0.15, conf * 0.9)
+            # Simple hex to rgb (assumes #rrggbb)
+            r = int(base[1:3], 16) / 255.0
+            g = int(base[3:5], 16) / 255.0
+            b = int(base[5:7], 16) / 255.0
+            colors.append((r, g, b, alpha))
+            glow_colors.append((r, g, b, alpha * 0.15))
 
         self.lc.set_segments(segments)
         self.lc.set_color(colors)
+
         self.glow_lc.set_segments(segments)
-        self.glow_lc.set_color(colors)
+        self.glow_lc.set_color(glow_colors)
 
         # Zoomed cents view (same x, y = cents deviation)
         zoom_points = np.column_stack((x, cents)).reshape(-1, 1, 2)
@@ -942,8 +957,8 @@ class IntuneVisualizer:
             print(f"  Serial: {self.config.port} @ {self.config.baud} baud")
         print(f"  History window: {self.config.history_sec:.1f} seconds")
         print("  Shortcuts: SPACE=pause/resume, C=clear, E=export, R=reset stats, Q=quit")
-        print("  Layout: Top = Alto Clef staff | Bottom = Zoomed cents view (±25¢, green = ±5¢ in tune)")
-        print("  Tip: Pause + hover for crosshairs to measure small errors and glitch duration")
+        print("  Layout: Top = Alto Clef staff (C3–F6) | Bottom = Zoomed ±25¢ view (green = ±5¢ in tune)")
+        print("  Tip: With real mic, low-confidence readings are filtered. Pause + hover for crosshairs.")
         print("=" * 60 + "\n")
 
         self._start_reader()

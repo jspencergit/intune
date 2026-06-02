@@ -19,30 +19,27 @@
  */
 
 /*
- * Intune Teensy Pitch Detection - Experiment v3
- * ------------------------------------------------
- * Running two detectors in parallel on the same clean C-major scale test signal:
+ * Intune Teensy Pitch Detection - Real I2S Mic Version
  *
- *   1. Original: AudioAnalyzeFFT1024 + parabolic interpolation + confidence tracking
- *   2. New:      AudioAnalyzeNoteFrequency (YIN-based, from the Teensy Audio library)
+ * Primary detector: AudioAnalyzeNoteFrequency (YIN-based) – good for acoustic instruments.
+ * Secondary (debug): Basic FFT1024 peak tracking (still running but not primary output).
  *
- * Primary serial output (drives the visualizer) = NoteFrequency (YIN) result.
- * FFT results are also emitted on lines starting with "FFT," for direct comparison.
- *
- * This lets us A/B test on the exact same input before moving to real mic/audio input.
+ * Serial output format (for visualizer):
+ *   timestamp,Note,Cents,probability
  *
  * To run:
- *   - Flash this to Teensy 4.1
- *   - Run visualizer with --port <your port>  (it will show the YIN results)
- *   - Watch Arduino Serial Monitor at the same time to see FFT vs YIN numbers
+ *   - Flash to Teensy 4.1 with INMP441 wired (see pinout above)
+ *   - python visualizer.py --port COMx
  */
 
 AudioInputI2S             i2s1;          // Real microphone input
 AudioAnalyzeFFT1024       fft1024;
 AudioAnalyzeNoteFrequency notefreq1;
+AudioAnalyzePeak          peak1;           // For amplitude / "note sounding" detection
 
-AudioConnection patchCord1(i2s1, 0, fft1024, 0);     // Left channel to FFT
-AudioConnection patchCord2(i2s1, 0, notefreq1, 0);   // Left channel to NoteFrequency
+AudioConnection patchCord1(i2s1, 0, fft1024, 0);
+AudioConnection patchCord2(i2s1, 0, notefreq1, 0);
+AudioConnection patchCord3(i2s1, 0, peak1, 0);
 
 const char* noteToName(int midi);
 
@@ -53,10 +50,12 @@ void setup() {
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
+  Serial.println("=== Level gating enabled (only sends data when mic hears something) ===");
   
-  // NoteFrequency (YIN-based) — good default threshold for clean signals.
-  // Lower (e.g. 0.4) = more detections but noisier. Higher (0.8+) = stricter.
-  notefreq1.begin(0.65);
+  // NoteFrequency (YIN-based). For real acoustic viola through INMP441,
+  // a lower threshold often works better (more detections, we gate on level above).
+  // Experiment: try 0.4 – 0.55
+  notefreq1.begin(0.45);
 }
 
 void loop() {
@@ -121,24 +120,17 @@ void loop() {
       haveYIN = (yinFreq > 150.0f && yinProb > 0.25f);
     }
 
-    if (haveYIN) {
+    // Only output when we have a confident YIN reading AND the mic is picking up significant audio level.
+    // This reduces garbage data during silence.
+    float level = peak1.read();
+    if (haveYIN && level > 0.02) {   // tune this threshold for your mic/instrument
       float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
       int midiNote = round(midiFloat);
       float cents = (midiFloat - midiNote) * 100.0f;
 
-      // Primary output for the visualizer (exact format it already parses)
-      // 4th field is now the YIN probability (0-1)
+      // Primary output for the visualizer. 4th field = YIN probability.
+      // We could append level here later if the visualizer parser is extended.
       Serial.printf("%lu,%s,%+.1f,%.2f\n", millis(), noteToName(midiNote), cents, yinProb);
-
-      // === Side-by-side comparison: also emit the OLD FFT result (prefixed) ===
-      // Watch this in the Serial Monitor while the visualizer shows the YIN line.
-      if (smoothedFreq > 150.0f) {
-        float fftMidi = 12.0f * log2(smoothedFreq / 440.0f) + 69.0f;
-        int fftNote = round(fftMidi);
-        float fftCents = (fftMidi - fftNote) * 100.0f;
-        float fftConfNorm = confidence / 25.0f;   // 0.0 - 1.0
-        Serial.printf("FFT,%lu,%s,%+.1f,%.2f\n", millis(), noteToName(fftNote), fftCents, fftConfNorm);
-      }
     }
   }
 }

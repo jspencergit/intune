@@ -98,17 +98,16 @@ G3,8
 
 ### 2.4 Teensy Firmware (teensy/src/main.cpp)
 
-**Current state (test harness, May 2026 experiment):**
-- Still using self-generated C major scale (1 second per note) for controlled testing.
-- **Two detectors running in parallel** on the identical input signal:
-  1. Original FFT1024 path (peak + parabolic interpolation + confidence smoothing) — kept for direct comparison.
-  2. `AudioAnalyzeNoteFrequency` (YIN-based, from the Teensy Audio library) — now the **primary** output.
-- YIN result drives the main serial stream (format compatible with visualizer).
-- FFT result is also emitted on lines prefixed `FFT,` so both can be observed side-by-side in the Serial Monitor.
-- AudioMemory bumped to 80.
-- Threshold for NoteFrequency currently 0.65 (tunable).
+**Current state (real mic input, June 2026):**
+- Using INMP441 I2S digital microphone module connected directly to Teensy 4.1.
+- Primary detector: `AudioAnalyzeNoteFrequency` (YIN-based) for robust monophonic pitch on acoustic input.
+- Secondary (for debugging): FFT1024 peak + interpolation still running in parallel, but output is secondary.
+- Output format: `timestamp,Note,Cents,probability` at ~40 Hz (YIN primary).
+- AudioMemory set to 120.
+- NoteFrequency threshold currently 0.65 (can be tuned lower for acoustic signals).
+- Full practical viola range supported in visualizer (C3–F6).
 
-**Goal of this version:** Quick A/B evaluation of YIN vs current FFT method on clean tones before moving to real mic input or more sophisticated custom algorithms (phase-vocoder FFT, custom autocorrelation, etc.).
+**Recent focus:** Getting real acoustic input working end-to-end and expanding the staff view to cover the instrument's full range.
 
 **PlatformIO config:** Standard `teensy41` + Arduino framework.
 

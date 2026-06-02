@@ -73,17 +73,19 @@ python visualizer.py --port COM4 --baud 57600 --debug
 
 ## Hardware Expectations
 
+When using a real microphone (e.g. INMP441 I2S on Teensy), the firmware gates output on audio level and the visualizer filters low-confidence readings. This keeps the trace clean during silence.
+
 The visualizer expects lines over serial in roughly this format:
 
 ```
-<anything>,Note,Cents
+<anything>,Note,Cents[,probability]
 ```
 
 Examples of valid lines:
 
 ```
 1234,G3,12.7
-reading,A4,-4.2
+reading,A4,-4.2,0.92
 G3,8
 ```
 
