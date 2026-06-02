@@ -733,7 +733,7 @@ class IntuneVisualizer:
 
         note = sample.note.upper() if sample.note else "---"
         cents = sample.cents
-        if note.strip() == "---":
+        if note.strip() == "---" or (sample.level is not None and sample.level < 0.005):
             text = f"REST   lvl={sample.level:.2f}" if sample.level is not None else "REST"
         else:
             sign = "+" if cents >= 0 else ""
@@ -750,7 +750,7 @@ class IntuneVisualizer:
 
         # Status line
         age = time.time() - sample.timestamp
-        if note.strip() == "---":
+        if note.strip() == "---" or (sample.level is not None and sample.level < 0.005):
             status = f"Silence (rest)  lvl={sample.level:.3f}" if sample.level is not None else "Silence (rest)"
         elif age > 1.5:
             status = f"Last reading: {age:.1f}s ago"
