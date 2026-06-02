@@ -154,6 +154,10 @@ def pitch_to_y(note_str: str) -> float:
     """Convert note name (e.g. 'G3', 'A4') to y-position on Alto Clef staff."""
     if not note_str:
         return 4.0
+    if note_str.strip() == "---":
+        # Special silence/rest marker — place below the staff so rests are visible
+        # but time still advances (important for rhythm practice)
+        return 0.8
     try:
         note = note_str[0].upper()
         # Handle possible trailing garbage
@@ -261,7 +265,8 @@ class SerialReader:
                     try:
                         candidate_note = parts[1]
                         candidate_cents = float(parts[2])
-                        if candidate_note and len(candidate_note) >= 2 and candidate_note[0].upper() in "ABCDEFG":
+                        if candidate_note and (candidate_note.strip() == "---" or
+                                               (len(candidate_note) >= 2 and candidate_note[0].upper() in "ABCDEFG")):
                             note = candidate_note
                             cents = candidate_cents
                     except (ValueError, IndexError):
@@ -272,7 +277,8 @@ class SerialReader:
                     try:
                         candidate_cents = float(parts[-1])
                         candidate_note = parts[-2]
-                        if candidate_note and len(candidate_note) >= 2 and candidate_note[0].upper() in "ABCDEFG":
+                        if candidate_note and (candidate_note.strip() == "---" or
+                                               (len(candidate_note) >= 2 and candidate_note[0].upper() in "ABCDEFG")):
                             note = candidate_note
                             cents = candidate_cents
                     except (ValueError, IndexError):
@@ -300,8 +306,10 @@ class SerialReader:
                         except (ValueError, IndexError):
                             pass
 
-                    # For real acoustic input, skip very low-confidence readings
-                    if confidence is None or confidence > 0.25:
+                    # For real acoustic input, skip very low-confidence readings,
+                    # BUT always accept the explicit silence/rest marker "---"
+                    is_silence = (note and note.strip() == "---")
+                    if is_silence or confidence is None or confidence > 0.25:
                         sample = PitchSample(
                             timestamp=time.time(),
                             note=note,
@@ -634,6 +642,10 @@ class IntuneVisualizer:
             self.last_data_time = time.time()
 
     def _update_stats(self, sample: PitchSample):
+        if sample.note and sample.note.strip() == "---":
+            # Silence/rest — don't count toward intonation stats, but time still advances
+            self.stats.last_update = time.time()
+            return
         self.stats.total_samples += 1
         abs_c = abs(sample.cents)
         self.stats.sum_abs_cents += abs_c
@@ -667,18 +679,26 @@ class IntuneVisualizer:
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
         # Build rgba colors so we can fade the trace on low confidence (very useful with real mic).
+        # Special handling for silence/rests ("---"): use gray and place at rest position.
         colors = []
         glow_colors = []
         for i, c in enumerate(cents):
-            base = get_color(c)
-            conf = self.history[i].confidence
-            alpha = 0.92 if conf is None else max(0.15, conf * 0.9)
-            # Simple hex to rgb (assumes #rrggbb)
-            r = int(base[1:3], 16) / 255.0
-            g = int(base[3:5], 16) / 255.0
-            b = int(base[5:7], 16) / 255.0
-            colors.append((r, g, b, alpha))
-            glow_colors.append((r, g, b, alpha * 0.15))
+            note = self.history[i].note
+            if note and note.strip() == "---":
+                # Silence/rest - gray, low alpha, will be drawn at the rest y position from pitch_to_y
+                alpha = 0.35
+                colors.append((0.6, 0.6, 0.7, alpha))
+                glow_colors.append((0.6, 0.6, 0.7, alpha * 0.3))
+            else:
+                base = get_color(c)
+                conf = self.history[i].confidence
+                alpha = 0.92 if conf is None else max(0.15, conf * 0.9)
+                # Simple hex to rgb (assumes #rrggbb)
+                r = int(base[1:3], 16) / 255.0
+                g = int(base[3:5], 16) / 255.0
+                b = int(base[5:7], 16) / 255.0
+                colors.append((r, g, b, alpha))
+                glow_colors.append((r, g, b, alpha * 0.15))
 
         self.lc.set_segments(segments)
         self.lc.set_color(colors)
@@ -702,12 +722,18 @@ class IntuneVisualizer:
             self.status_text.set_text("Waiting for data..." if not self.paused else "PAUSED")
             return
 
-        note = sample.note.upper()
+        note = sample.note.upper() if sample.note else "---"
         cents = sample.cents
-        sign = "+" if cents >= 0 else ""
-        text = f"{note}   {sign}{cents:.1f}¢"
+        if note.strip() == "---":
+            text = f"REST   lvl={sample.level:.2f}" if sample.level is not None else "REST"
+        else:
+            sign = "+" if cents >= 0 else ""
+            text = f"{note}   {sign}{cents:.1f}¢"
 
-        color = get_color(cents)
+        if note.strip() == "---":
+            color = "#8888aa"
+        else:
+            color = get_color(cents)
         self.current_text.set_text(text)
         self.current_text.set_color(color)
 

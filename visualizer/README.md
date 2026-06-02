@@ -90,6 +90,7 @@ G3,8
 ```
 
 - The parser is intentionally flexible — it looks for a plausible note name + number near the end of each line.
+- Special silence/rest marker: `---` (e.g. `1234,---,0,0.00,0.012`). The trace continues scrolling at constant rate (right-aligned, newest on right) so rests are visible for rhythm practice.
 - Recommended update rate: **50–100 Hz** (the visualizer samples at 60 points/second internally).
 - Any microcontroller + pitch detection library that can output note + cents deviation will work (e.g. ESP32 + YIN or autocorrelation pitch detection, Teensy + audio library, etc.).
 

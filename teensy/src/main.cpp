@@ -50,7 +50,7 @@ void setup() {
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
-  Serial.println("=== Level gating enabled (only sends data when mic hears something) ===");
+  Serial.println("=== Constant-rate output (40 Hz). Silence sent as '---' for rests/rhythm practice. ===");
   
   // NoteFrequency (YIN-based). For real acoustic viola through INMP441,
   // a lower threshold often works better (more detections, we gate on level above).
@@ -105,11 +105,14 @@ void loop() {
     }
   }
 
-  // Fixed-rate output (~40 Hz)
+  // Fixed-rate output (~40 Hz) — always send so the visualizer scrolls continuously
+  // like a right-aligned "oscilloscope". Essential for rhythm practice (rests are part of time).
+  // Newest data is on the right, as musicians read forward in time to the right.
   if (millis() - lastOutput > 25) {
     lastOutput = millis();
 
-    // --- New primary detector: AudioAnalyzeNoteFrequency (YIN-based) ---
+    float level = peak1.read();
+
     bool haveYIN = false;
     float yinFreq = 0.0f;
     float yinProb = 0.0f;
@@ -117,20 +120,19 @@ void loop() {
     if (notefreq1.available()) {
       yinFreq = notefreq1.read();
       yinProb = notefreq1.probability();
-      haveYIN = (yinFreq > 150.0f && yinProb > 0.25f);
+      haveYIN = (yinFreq > 100.0f && yinProb > 0.15f);
     }
 
-    // Only output when we have a confident YIN reading AND the mic is picking up significant audio level.
-    // This reduces garbage data during silence.
-    float level = peak1.read();
-    if (haveYIN && level > 0.02) {   // tune this threshold for your mic/instrument
+    if (haveYIN && level > 0.015) {
+      // We have a sounding note
       float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
       int midiNote = round(midiFloat);
       float cents = (midiFloat - midiNote) * 100.0f;
-
-      // Primary output. Format: timestamp,Note,Cents,probability[,level]
-      // Level (0-1) is useful for the visualizer to gate or show volume.
       Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), noteToName(midiNote), cents, yinProb, level);
+    } else {
+      // Silence / rest / below threshold — still send at constant rate
+      // Special marker " --- " tells the visualizer this is a rest.
+      Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
     }
   }
 }
