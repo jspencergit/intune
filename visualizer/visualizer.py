@@ -428,6 +428,7 @@ class IntuneVisualizer:
         self.beats_visible = 4.0
         self.latest_teensy_ts = 0.0
         self.last_received_wall = 0.0
+        self.frozen_now_ts = None
 
         # Threading
         self.data_queue: queue.Queue = queue.Queue(maxsize=500)
@@ -701,10 +702,14 @@ class IntuneVisualizer:
 
         # Time-based positioning locked to Teensy millis() for accurate beat time.
         # Use wall-time extrapolation between arrivals for butter-smooth scrolling.
-        now_ts = self.latest_teensy_ts
-        if self.last_received_wall > 0:
-            elapsed = time.time() - self.last_received_wall
-            now_ts = self.latest_teensy_ts + elapsed * 1000.0
+        # When paused, use the frozen timestamp so the view stops moving.
+        if self.paused and self.frozen_now_ts is not None:
+            now_ts = self.frozen_now_ts
+        else:
+            now_ts = self.latest_teensy_ts
+            if self.last_received_wall > 0:
+                elapsed = time.time() - self.last_received_wall
+                now_ts = self.latest_teensy_ts + elapsed * 1000.0
 
         visible_sec = self.beats_visible / (self.bpm / 60.0) if self.bpm > 0 else 4.0
 
@@ -860,12 +865,25 @@ class IntuneVisualizer:
         self.beats_visible = float(val)
 
     def _toggle_pause(self, event=None):
+        was_paused = self.paused
         self.paused = not self.paused
         label = "Resume" if self.paused else "Pause"
         self.pause_button.label.set_text(label)
         self._update_current_display(self.history[-1] if self.history else None)
         if not self.paused:
             self._hide_crosshair()
+            # Resync extrapolation base to the frozen time so scroll continues smoothly from pause point
+            frozen = self.frozen_now_ts
+            self.frozen_now_ts = None
+            self.last_received_wall = time.time()
+            self.latest_teensy_ts = frozen or self.latest_teensy_ts
+        else:
+            # Freeze the "now" timestamp so the time-based view stops scrolling
+            if self.last_received_wall > 0:
+                elapsed = time.time() - self.last_received_wall
+                self.frozen_now_ts = self.latest_teensy_ts + elapsed * 1000.0
+            else:
+                self.frozen_now_ts = self.latest_teensy_ts
 
     def _clear_history(self, event=None):
         self.history.clear()
