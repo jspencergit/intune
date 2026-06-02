@@ -131,20 +131,73 @@ void loop() {
       Serial.printf("DEBUG level=%.4f prob=%.2f freq=%.1f\n", level, yinProb, yinFreq);
     }
 
-    // Significantly lowered for soft speaker playback of music files.
-    // Snaps and loud chimes trigger easily; soft music now should too.
-    // Raise this (e.g. 0.005 - 0.05) when using a real instrument mic'd directly.
-    const float LEVEL_THRESHOLD = 0.0002;
+    // Hysteresis / state machine + hold-last-good to avoid rapid flipping and "gaps"
+    // on marginal/soft signals (e.g. speaker playback of mezzo-piano recordings).
+    // Once locked on a note we continue sending the last good note+cents for a while
+    // even if the current sample is marginal. Only switch to explicit rest after
+    // sustained low signal. This keeps the trace steady for a "steady note" while
+    // still providing clear rest markers for rhythm practice.
+    static bool is_sounding = false;
+    static uint32_t consecutive_good = 0;
+    static uint32_t consecutive_low = 0;
 
-    if (haveYIN && level > LEVEL_THRESHOLD) {
-      // We have a sounding note
-      float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
-      int midiNote = round(midiFloat);
-      float cents = (midiFloat - midiNote) * 100.0f;
-      Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), noteToName(midiNote), cents, yinProb, level);
+    // Remember last good reading so we can "hold" it during brief dips
+    static float last_good_freq = 0;
+    static float last_good_prob = 0;
+    static float last_good_level = 0;
+    static char last_good_note_buf[8] = {0};
+    static float last_good_cents = 0;
+
+    const uint32_t MIN_GOOD_TO_LOCK = 2;
+    const uint32_t MIN_LOW_TO_REST = 5;   // a bit more sticky
+
+    bool this_sample_good = (haveYIN && level > 0.0005);
+
+    if (this_sample_good) {
+      consecutive_good++;
+      consecutive_low = 0;
+
+      // update last good
+      last_good_freq = yinFreq;
+      last_good_prob = yinProb;
+      last_good_level = level;
+
+      // compute note name/cents once for holding
+      float mf = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
+      int mn = round(mf);
+      last_good_cents = (mf - mn) * 100.0f;
+      // copy note name
+      const char* nm = noteToName(mn);
+      strncpy(last_good_note_buf, nm, sizeof(last_good_note_buf)-1);
+      last_good_note_buf[sizeof(last_good_note_buf)-1] = 0;
+
+      if (!is_sounding && consecutive_good >= MIN_GOOD_TO_LOCK) {
+        is_sounding = true;
+      }
     } else {
-      // Silence / rest / below threshold — still send at constant rate
-      // Special marker "---" tells the visualizer this is a rest.
+      consecutive_low++;
+      consecutive_good = 0;
+      if (is_sounding && consecutive_low >= MIN_LOW_TO_REST) {
+        is_sounding = false;
+      }
+    }
+
+    if (is_sounding) {
+      // Send either the fresh reading or the held last good one
+      float use_freq = haveYIN ? yinFreq : last_good_freq;
+      float use_prob = haveYIN ? yinProb : last_good_prob;
+      float use_level = haveYIN ? level : last_good_level;
+      const char* use_note = haveYIN ? noteToName(round(12.0f * log2(yinFreq / 440.0f) + 69.0f)) : last_good_note_buf;
+      float use_cents = haveYIN ? (12.0f * log2(yinFreq / 440.0f) + 69.0f - round(12.0f * log2(yinFreq / 440.0f) + 69.0f)) * 100.0f : last_good_cents;
+
+      // If we don't have a valid held note yet, fall back to silence
+      if (use_note[0] == 0) {
+        Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
+      } else {
+        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), use_note, use_cents, use_prob, use_level);
+      }
+    } else {
+      // Sustained rest
       Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
     }
   }
