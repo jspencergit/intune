@@ -1,0 +1,13 @@
+build/
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.o
+__pycache__/
+.DS_Store
+Thumbs.db
+*.log
+# If you drop a font next to the exe for nicer text:
+# *.ttf
+# *.otf

@@ -10,10 +10,14 @@ This script:
 - Runs high-quality pitch detection using librosa.pyin
 - Plays the audio on your speakers
 - Generates rich visualizations (waveform, pitch, cents deviation, confidence)
+- **Teensy YIN simulation** (exact same freq→note conversion as main.cpp + octave correction prototype)
+  so you can quantify octave errors (e.g. E3 reported as E4) on your clean C major scale
+  or the built-in non-vibrato C3/G3/etc. files before reflashing the uC.
 - Automatically saves the plot as a PNG (with timestamp) in the 'plots/' folder
 
 Usage:
     python analyze_viola.py
+    # Then point AUDIO_PATH at your downloaded C major scale (no vibrato) for low-string testing.
 
 Requirements:
     pip install librosa sounddevice soundfile matplotlib numpy
@@ -45,6 +49,7 @@ AUDIO_PATH = Path(r"C:\Code\reference_audio\viola\viola_A4_1_piano_arco-glissand
 # AUDIO_PATH = Path(r"C:\Code\reference_audio\viola\viola_G4_1_mezzo-piano_non-vibrato.mp3")
 
 # Recommended non-vibrato files (good for early testing - all ~1 second long)
+# Especially useful for octave-error debugging on low strings (C3 etc.).
 NON_VIBRATO_FILES = [
     Path(r"C:\Code\reference_audio\viola\viola_C4_1_mezzo-piano_non-vibrato.mp3"),
     Path(r"C:\Code\reference_audio\viola\viola_G4_1_mezzo-piano_non-vibrato.mp3"),
@@ -119,6 +124,27 @@ def load_and_analyze(audio_path: Path):
     cents = np.array(cents)
 
     print("Analysis complete.")
+
+    # --- Teensy YIN simulation (for octave error debugging) ---
+    # Mirrors teensy/src/main.cpp freq→note conversion (pure YIN, no post-correction).
+    teensy_notes = []
+    teensy_cents = []
+    for freq in f0:
+        if np.isnan(freq) or freq <= 0:
+            teensy_notes.append(None)
+            teensy_cents.append(np.nan)
+            continue
+
+        midi_float = 12.0 * np.log2(freq / 440.0) + 69.0
+        midi_note = int(round(midi_float))
+        c = (midi_float - midi_note) * 100.0
+
+        note_name = librosa.midi_to_note(midi_note, octave=True)
+        teensy_notes.append(note_name)
+        teensy_cents.append(c)
+
+    teensy_cents = np.array(teensy_cents)
+
     return {
         "y": y,
         "sr": sr,
@@ -129,6 +155,9 @@ def load_and_analyze(audio_path: Path):
         "voiced_probs": voiced_probs,
         "voiced_flag": voiced_flag,
         "notes": notes,
+        # Simulated Teensy output (with simple correction above)
+        "teensy_notes": teensy_notes,
+        "teensy_cents": teensy_cents,
     }
 
 
@@ -160,6 +189,10 @@ def plot_analysis(data: dict, audio_path: Path):
     cents = data["cents"]
     voiced_probs = data["voiced_probs"]
 
+    # Optional: simulated Teensy output (for direct comparison of octave errors)
+    teensy_cents = data.get("teensy_cents")
+    teensy_notes = data.get("teensy_notes")
+
     # Create time axis for the raw waveform
     wave_times = np.linspace(0, len(y) / sr, num=len(y))
 
@@ -181,15 +214,18 @@ def plot_analysis(data: dict, audio_path: Path):
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    # 3. Cents deviation
+    # 3. Cents deviation (pyin ground truth + optional Teensy simulation overlay)
     ax = axes[2]
-    ax.plot(times, cents, color="#d62728", linewidth=1.2)
+    ax.plot(times, cents, color="#d62728", linewidth=1.2, label="pyin (ground truth)")
+    if teensy_cents is not None:
+        ax.plot(times, teensy_cents, color="#ff7f0e", linewidth=1.0, linestyle="--",
+                label="Teensy YIN sim (with octave correction prototype)")
     ax.axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
     ax.axhline(9, color="green", linestyle=":", linewidth=0.8, alpha=0.6, label="±9 cents (in tune)")
     ax.axhline(-9, color="green", linestyle=":", linewidth=0.8, alpha=0.6)
     ax.fill_between(times, -9, 9, color="green", alpha=0.08)
     ax.set_ylabel("Cents Deviation")
-    ax.set_title("Cents from Nearest Semitone (0 = perfectly in tune)")
+    ax.set_title("Cents from Nearest Semitone (0 = perfectly in tune)  —  dashed = simulated Teensy output")
     ax.set_ylim(-50, 50)
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
@@ -232,6 +268,30 @@ def main():
     print(f"Analyzing: {AUDIO_PATH.name}\n")
 
     data = load_and_analyze(AUDIO_PATH)
+
+    # --- Quick octave-error report (Teensy simulation vs pyin ground truth) ---
+    # Especially useful for the user's clean C major scale + low C3/G3/E3 etc.
+    if "teensy_notes" in data and "notes" in data:
+        pyin_notes = data["notes"]
+        teensy_notes = data["teensy_notes"]
+        times = data["times"]
+        f0 = data["f0"]
+        errors = 0
+        low_errors = 0
+        total = 0
+        for i, (pn, tn, f) in enumerate(zip(pyin_notes, teensy_notes, f0)):
+            if pn is None or tn is None:
+                continue
+            total += 1
+            # Crude octave check: same letter name but different octave digit
+            if pn[0] == tn[0] and pn != tn:
+                errors += 1
+                if f < 250:  # roughly below ~B3 / low strings
+                    low_errors += 1
+        if total > 0:
+            print(f"\n[Teensy sim vs pyin] Octave mismatches: {errors}/{total} frames "
+                  f"({100*errors/total:.1f}%). Low-range (f<250Hz): {low_errors}.")
+            print("         (Run with your C major scale or C3 files; lower is better after correction.)")
 
     # Play audio in background thread (skipped in HEADLESS mode)
     playback_thread = threading.Thread(target=play_audio, args=(data["y"], data["sr"]), daemon=True)
@@ -283,8 +343,9 @@ def run_batch(files):
 if __name__ == "__main__":
     # === Easy ways to run ===
 
-    # Default: Analyze whatever is set in AUDIO_PATH above
-    # (Currently set to the A4 pianissimo file you asked for)
+    # Default: Analyze whatever is set in AUDIO_PATH above.
+    # For octave debugging (E3->E4 etc. on lower strings), set AUDIO_PATH to your
+    # clean C major scale (no vibrato) download, or use one of the C3 non-vibrato files.
     main()
 
     # Alternative: Run the batch of non-vibrato files one after another

@@ -6,8 +6,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pyserial>=3.5",
-    "matplotlib>=3.8",
     "numpy>=1.26",
+    "PyQt5>=5.15",
+    "pyqtgraph>=0.13",
+    # matplotlib kept temporarily during transition
+    "matplotlib>=3.8",
 ]
 
 [project.scripts]

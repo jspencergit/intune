@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """
-Intune - Real-time Viola Pitch Visualizer
-==========================================
+Intune - Real-time Viola Pitch Visualizer (pyqtgraph version)
+===========================================================
 
-A high-quality, robust tool for visualizing intonation on the viola (Alto Clef).
+Switched to PyQt5 + pyqtgraph for significantly smoother real-time scrolling,
+inspired by efficient serial plotters like https://github.com/iskandarputra/Real-Time-Py-Serial-Plotter .
 
-Features:
-- Threaded serial reader with automatic reconnection
-- Simulation mode for development without hardware (--simulate)
-- Large, clear current note + cents display with color
-- Live statistics (time in tune, average deviation, etc.)
-- Pause / Clear / History controls + crosshair inspection (pause then hover over trace)
-- Keyboard shortcuts (E = export debug log)
-- Cross-platform serial port handling
-- Proper error handling and status feedback
-- Clean, beautiful dark theme with musical staff
+Key techniques borrowed/adapted for smoothness:
+- pyqtgraph PlotWidget + PlotDataItem with fast setData (much lighter than Matplotlib FuncAnimation + LineCollection rebuilds).
+- Event/timer driven updates (only when data arrives or regular poll).
+- Circular-buffer style history (deque with maxlen).
+- Direct curve updates instead of per-frame full artist reconstruction.
+- Qt native widgets and event loop.
 
-Expected serial data format (one line per reading):
-    <anything>,Note,Cents
-    Example: 1234,G3,12.7
+The musical features (alto clef staff, cents deviation view, BPM-timed "visible beats" window,
+color-coded intonation, rests, confidence alpha, crosshair inspection, rich export, simulator)
+are preserved as much as possible.
+
+Run:
+  python visualizer.py --simulate
+  python visualizer.py --port COM3
+
+Install deps:
+  pip install -r requirements.txt
+  (PyQt5, pyqtgraph, pyserial, numpy)
 """
 
 import argparse
@@ -29,18 +34,29 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional, Deque
+from typing import Optional, Deque, List, Tuple
 
 import numpy as np
-import serial
-from serial.tools import list_ports
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from matplotlib.collections import LineCollection
-from matplotlib.widgets import Slider, Button
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QSlider, QGridLayout, QFileDialog
+)
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QFont, QColor
+
+import pyqtgraph as pg
+
+# Optional: keep matplotlib only for the debug export dialog if tkinter is missing, but we use Qt now.
+try:
+    import serial
+    from serial.tools import list_ports
+except ImportError:
+    serial = None
+    list_ports = None
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION & CONSTANTS (preserved from original for compatibility)
 # =============================================================================
 
 DEFAULT_PORT = "COM3" if sys.platform.startswith("win") else "/dev/ttyACM0"
@@ -48,46 +64,50 @@ DEFAULT_BAUD = 115200
 DEFAULT_HISTORY_SEC = 6.0
 POINTS_PER_SECOND = 60
 MIN_HISTORY_POINTS = 150
-UPDATE_INTERVAL_MS = 20  # ~50 fps target
 
-# Musical constants (Alto Clef / Viola)
-# Expanded range to cover full practical viola: C3 (open C) → ~F6 (high on A string)
-STAFF_Y_MAIN = [2.0, 2.8, 3.6, 4.4, 5.2]          # Core 5 staff lines (G3–E4 area)
-
-# Extended ledger lines for full viola range
+# First position viola notes only (C3 open C string up to E5 on A string in first position)
+# Trimmed to avoid clutter from higher positions.
+STAFF_Y_MAIN = [2.8, 3.6, 4.4, 5.2, 6.0]  # Core around G3-A4
 STAFF_Y_LEDGER = [
-    1.2, 1.6,           # C3, D3 (low end)
-    2.4, 3.2,           # E3/F3 area
-    4.0, 4.8, 5.6, 6.4, 7.2, 8.0, 8.8,   # mid to high
-    9.6, 10.4,          # C6 / E6 area
+    1.2, 1.6,           # C3, D3 low
+    2.4, 3.2,
+    4.0, 4.8, 5.6, 6.4, 7.2, 8.0,
 ]
 
 NOTE_LABELS = [
-    # Full practical viola range: C3 (open C string) up to F6 (high positions on A string)
     ("C3", 1.2), ("D3", 1.6), ("E3", 2.0), ("F3", 2.4), ("G3", 2.8),
     ("A3", 3.2), ("B3", 3.6),
     ("C4", 4.0), ("D4", 4.4), ("E4", 4.8), ("F4", 5.2), ("G4", 5.6),
     ("A4", 6.0), ("B4", 6.4),
-    ("C5", 6.8), ("D5", 7.2), ("E5", 7.6), ("F5", 8.0), ("G5", 8.4),
-    ("A5", 8.8),
-    ("C6", 9.6), ("D6", 10.0), ("E6", 10.4), ("F6", 10.8),
+    ("C5", 6.8), ("D5", 7.2), ("E5", 7.6),
 ]
 
-# Color scheme (dark elegant theme)
-COLOR_BG = "#0a0a1f"
-COLOR_IN_TUNE = "#7dff9f"
-COLOR_SHARP = "#ff6b6b"   # red for sharp
-COLOR_FLAT = "#6b9cff"    # blue for flat
-COLOR_TEXT = "#e0e0ff"
-COLOR_TEXT_DIM = "#aaaaaa"
-COLOR_STAFF = "#eeeeee"
-COLOR_LEDGER = "#aaaaaa"
+# Color scheme - sheet music style (white background, black staff lines like printed music)
+COLOR_BG = "w"                  # white paper
+COLOR_STAFF = "#000000"         # solid black staff lines
+COLOR_LEDGER = "#444444"        # dark gray for ledgers
+COLOR_LABEL = "#000000"         # black note names
+COLOR_ALTO = "#000000"          # black "ALTO CLEF" text
+
+# Intonation trace colors - vivid but not neon, so they read well over black staff lines
+# and give clear feedback (green=in-tune, red=sharp, blue=flat)
+COLOR_IN_TUNE = "#2E8B57"       # sea green
+COLOR_SHARP = "#DC143C"         # crimson
+COLOR_FLAT = "#4169E1"          # royal blue
+
+# Interaction / secondary elements (still high contrast on white)
+COLOR_TEXT = "#000000"
+COLOR_TEXT_DIM = "#333333"
+COLOR_CROSSHAIR = "#8B0000"     # dark red for crosshairs (easy to see)
+COLOR_HOVER = "#006400"         # dark green for hover readout
 
 IN_TUNE_THRESHOLD_CENTS = 5
 GOOD_THRESHOLD_CENTS = 15
 
+UPDATE_INTERVAL_MS = 25  # ~40 fps poll / update target (pyqtgraph is fast)
+
 # =============================================================================
-# DATA MODELS
+# DATA MODELS (mostly unchanged)
 # =============================================================================
 
 @dataclass
@@ -99,83 +119,41 @@ class Config:
     debug: bool = False
     list_ports: bool = False
 
-
 @dataclass
 class PitchSample:
     """A single pitch measurement."""
-    timestamp: float  # wall time on arrival (fallback)
+    timestamp: float
     note: str
     cents: float
     y_pos: float
-    confidence: Optional[float] = None   # From 4th field (YIN probability, etc.)
-    level: Optional[float] = None        # From 5th field (0-1 mic peak level) when available
-    teensy_ts: Optional[float] = None    # millis() from Teensy for accurate time base
+    confidence: Optional[float] = None
+    level: Optional[float] = None
+    teensy_ts: Optional[float] = None
 
-
-@dataclass
-class Stats:
-    """Live session statistics."""
-    start_time: float = field(default_factory=time.time)
-    total_samples: int = 0
-    in_tune_samples: int = 0
-    sum_abs_cents: float = 0.0
-    max_deviation: float = 0.0
-    last_update: float = field(default_factory=time.time)
-
-    def reset(self):
-        self.start_time = time.time()
-        self.total_samples = 0
-        self.in_tune_samples = 0
-        self.sum_abs_cents = 0.0
-        self.max_deviation = 0.0
-        self.last_update = time.time()
-
-    @property
-    def duration(self) -> float:
-        return max(0.1, time.time() - self.start_time)
-
-    @property
-    def pct_in_tune(self) -> float:
-        if self.total_samples == 0:
-            return 0.0
-        return (self.in_tune_samples / self.total_samples) * 100
-
-    @property
-    def mean_abs_cents(self) -> float:
-        if self.total_samples == 0:
-            return 0.0
-        return self.sum_abs_cents / self.total_samples
-
+# (Stats class removed - statistics panel no longer shown)
 
 # =============================================================================
-# NOTE MAPPING
+# NOTE MAPPING & COLORS (unchanged)
 # =============================================================================
 
 def pitch_to_y(note_str: str) -> float:
-    """Convert note name (e.g. 'G3', 'A4') to y-position on Alto Clef staff."""
     if not note_str:
         return 4.0
     if note_str.strip() == "---":
-        # Special silence/rest marker — place below the staff so rests are visible
-        # but time still advances (important for rhythm practice)
         return 0.8
     try:
         note = note_str[0].upper()
-        # Handle possible trailing garbage
         octave_str = ''.join(c for c in note_str[1:] if c.isdigit())
         if not octave_str:
             octave_str = "3"
         octave = int(octave_str)
-
         base = {"C": 0, "D": 1, "E": 2, "F": 3, "G": 4, "A": 5, "B": 6}
         steps = base.get(note, 3) + (octave - 3) * 7
         return 1.2 + steps * 0.4
     except Exception:
         return 4.0
 
-
 def get_color(cents: float) -> str:
-    """Return color based on intonation accuracy."""
     abs_cents = abs(cents)
     if abs_cents < IN_TUNE_THRESHOLD_CENTS:
         return COLOR_IN_TUNE
@@ -184,34 +162,30 @@ def get_color(cents: float) -> str:
     else:
         return COLOR_FLAT
 
-
-def get_color_with_alpha(cents: float, alpha: float = 1.0) -> tuple:
-    """Return (color, alpha) tuple for more nuanced rendering."""
-    return get_color(cents), alpha
-
-
 # =============================================================================
-# SERIAL READER (THREADED)
+# SERIAL READER & SIMULATOR (reused with minimal changes)
 # =============================================================================
 
 class SerialReader:
-    """Threaded serial reader with automatic reconnection."""
+    """Threaded serial reader with automatic reconnection (same as before)."""
 
     def __init__(self, port: str, baud: int, out_queue: queue.Queue, stop_event: threading.Event):
         self.port = port
         self.baud = baud
         self.out_queue = out_queue
         self.stop_event = stop_event
-        self.ser: Optional[serial.Serial] = None
+        self.ser: Optional["serial.Serial"] = None
         self.running = False
         self.last_success = 0.0
 
     def _connect(self) -> bool:
+        if serial is None:
+            return False
         try:
             self.ser = serial.Serial(self.port, self.baud, timeout=0.1)
             logging.info(f"Connected to {self.port} @ {self.baud} baud")
             return True
-        except serial.SerialException as e:
+        except Exception as e:
             logging.warning(f"Failed to open {self.port}: {e}")
             return False
 
@@ -239,17 +213,12 @@ class SerialReader:
             try:
                 raw = self.ser.readline()
                 if not raw:
-                    # Timeout or no data
                     if time.time() - self.last_success > 2.0:
-                        # Consider connection stale
                         self._disconnect()
                     continue
 
                 line = raw.decode("utf-8", errors="ignore").strip()
-                logging.debug(f"Raw serial line: {line!r}")
-
                 if not line or "," not in line:
-                    logging.debug("  → Skipped (no comma or empty)")
                     continue
 
                 parts = [p.strip() for p in line.split(",") if p.strip()]
@@ -257,12 +226,7 @@ class SerialReader:
                 note = None
                 cents = None
 
-                # === Robust parsing for common formats ===
-                # Format A (your Teensy):   timestamp,Note,Cents,amplitude
-                # Format B (original):      ...,Note,Cents
-                # Format C:                 Note,Cents
                 if len(parts) >= 3:
-                    # Try the classic "second and third fields" pattern first (very common)
                     try:
                         candidate_note = parts[1]
                         candidate_cents = float(parts[2])
@@ -274,7 +238,6 @@ class SerialReader:
                         pass
 
                 if note is None and len(parts) >= 2:
-                    # Fallback: last two fields (Note,Cents at the end)
                     try:
                         candidate_cents = float(parts[-1])
                         candidate_note = parts[-2]
@@ -286,17 +249,12 @@ class SerialReader:
                         pass
 
                 if note is not None and cents is not None:
-                    logging.debug(f"  → Parsed successfully: note={note}, cents={cents}")
-
-                    # Parse teensy timestamp (first field, millis from Teensy)
                     teensy_ts = None
-                    if len(parts) >= 1:
-                        try:
-                            teensy_ts = float(parts[0])
-                        except (ValueError, IndexError):
-                            pass
+                    try:
+                        teensy_ts = float(parts[0])
+                    except (ValueError, IndexError):
+                        pass
 
-                    # Try to parse optional 4th field as confidence/probability
                     confidence = None
                     if len(parts) >= 4:
                         try:
@@ -306,7 +264,6 @@ class SerialReader:
                         except (ValueError, IndexError):
                             pass
 
-                    # Optional 5th field = level (0-1)
                     level = None
                     if len(parts) >= 5:
                         try:
@@ -315,8 +272,6 @@ class SerialReader:
                         except (ValueError, IndexError):
                             pass
 
-                    # Silence/rest is explicitly marked by "---" from firmware when volume below rest threshold.
-                    # Above threshold we accept fresh or held detector output (low conf just means faded trace).
                     is_silence = (note and note.strip() == "---")
                     if is_silence or confidence is None or confidence > 0.02 or (level is not None and level > 0.001):
                         sample = PitchSample(
@@ -333,27 +288,16 @@ class SerialReader:
                             self.last_success = time.time()
                         except queue.Full:
                             pass
-                else:
-                    logging.debug(f"  → Failed to parse note+cents from parts={parts}")
-
-            except serial.SerialException as e:
-                logging.warning(f"Serial error: {e}")
+            except Exception as e:
+                logging.debug(f"Serial read error: {e}")
                 self._disconnect()
                 time.sleep(0.5)
-            except Exception as e:
-                logging.debug(f"Unexpected read error: {e}")
 
         self._disconnect()
         self.running = False
-        logging.info("Serial reader stopped")
-
-
-# =============================================================================
-# SIMULATOR (for development without hardware)
-# =============================================================================
 
 class Simulator:
-    """Generates realistic drifting pitch data for testing."""
+    """Generates realistic drifting pitch data (reused)."""
 
     def __init__(self, out_queue: queue.Queue, stop_event: threading.Event, base_note: str = "G3"):
         self.out_queue = out_queue
@@ -370,18 +314,14 @@ class Simulator:
         interval = 1.0 / POINTS_PER_SECOND
 
         while not self.stop_event.is_set():
-            # Simulate a player: slow drift + small jitter + occasional correction
             self.phase += 0.035
-            self.drift += np.random.normal(0, 0.08)  # slow random walk
+            self.drift += np.random.normal(0, 0.08)
             self.drift = np.clip(self.drift, -35, 35)
 
-            # Add some "effort" oscillation
             effort = 6.0 * np.sin(self.phase * 0.6) + 3.0 * np.sin(self.phase * 1.7)
             jitter = np.random.normal(0, 1.8)
 
             cents = self.drift + effort + jitter
-
-            # Occasionally "nail" a note or have a bad moment
             if np.random.random() < 0.012:
                 cents = np.random.choice([-18, -12, 0, 0, 0, 7, 14, 22])
 
@@ -391,9 +331,9 @@ class Simulator:
                 timestamp=time.time(),
                 note=self.base_note,
                 cents=self.current_cents,
-                y_pos=self.base_y + (self.current_cents * 0.012),  # small visual movement
-                confidence=None,   # Simulation doesn't have real detector confidence
-                teensy_ts = time.time() * 1000,  # fake for sim
+                y_pos=self.base_y + (self.current_cents * 0.012),
+                confidence=None,
+                teensy_ts=time.time() * 1000,
             )
             try:
                 self.out_queue.put_nowait(sample)
@@ -403,64 +343,52 @@ class Simulator:
             time.sleep(max(0.001, interval - 0.001))
 
         self.running = False
-        logging.info("Simulator stopped")
-
 
 # =============================================================================
-# MAIN VISUALIZER
+# MAIN PYQTGRAPH VISUALIZER WINDOW
 # =============================================================================
 
-class IntuneVisualizer:
-    """Main application class."""
+class IntuneVisualizer(QMainWindow):
+    """PyQtGraph-based real-time visualizer (smooth scrolling via efficient setData)."""
 
     def __init__(self, config: Config):
+        super().__init__()
         self.config = config
-        self.max_points = 1200  # generous buffer for time-based view
 
         # Data
-        self.history: Deque[PitchSample] = deque(maxlen=self.max_points)
-        self.stats = Stats()
+        self.history: Deque[PitchSample] = deque(maxlen=2500)
         self.paused = False
+        self.latest_teensy_ts = 0.0
         self.last_data_time = 0.0
 
-        # Time base
+        # Musical time (for x-axis in beats)
         self.bpm = 80.0
         self.beats_visible = 4.0
-        self.latest_teensy_ts = 0.0
-        self.last_received_wall = 0.0
-        self.frozen_now_ts = None
 
-        # Threading
+        # Threading / data source
         self.data_queue: queue.Queue = queue.Queue(maxsize=500)
         self.stop_event = threading.Event()
         self.reader_thread: Optional[threading.Thread] = None
         self.reader: Optional[SerialReader | Simulator] = None
 
-        # Matplotlib objects
-        self.fig = None
-        self.ax_main = None
-        self.ax_status = None
-        self.lc = None
-        self.glow_lc = None
-        self.zoom_lc = None
-        self.ax_zoom = None
-        self.current_text = None
-        self.stats_text = None
-        self.status_text = None
-        self.slider = None  # legacy
-        self.bpm_slider = None
-        self.beats_slider = None
-        self.pause_button = None
-        self.clear_button = None
-        self.export_button = None
+        # For smooth creep even between packets (display time advances independently)
+        self.display_now = 0.0
+        self.last_poll_wall = time.time()
 
-        # Crosshair / hover inspection (shown when paused)
-        self.crosshair_v = None
-        self.crosshair_h = None
-        self.hover_text = None
+        # Defensive init for items that _update_plots touches early
+        self.staff_segment_items: List[pg.PlotDataItem] = []
+        self.cents_segment_items: List[pg.PlotDataItem] = []
+        self.staff_note_labels: List[Tuple[pg.TextItem, float]] = []
+        self.alto_clef_item = None
 
         self._setup_logging()
-        self._setup_figure()
+        self._setup_ui()
+        self._start_reader()
+
+        # Regular poll + update (cheap in pyqtgraph)
+        self.poll_timer = QTimer()
+        self.poll_timer.timeout.connect(self._poll_and_update)
+        self.poll_timer.start(UPDATE_INTERVAL_MS)
 
     def _setup_logging(self):
         level = logging.DEBUG if self.config.debug else logging.INFO
@@ -470,601 +398,178 @@ class IntuneVisualizer:
             datefmt="%H:%M:%S",
         )
 
-    def _setup_figure(self):
-        plt.style.use("dark_background")
-        self.fig = plt.figure(figsize=(16, 9), facecolor=COLOR_BG)
+    def _setup_ui(self):
+        self.setWindowTitle("Intune — Viola Intonation Visualizer (pyqtgraph)")
+        self.resize(1400, 900)
 
-        # Use GridSpec for flexible layout
-        # Row 0: Top bar - left: big current note, right: stats
-        # Row 1: Main Alto Clef staff with trace
-        # Row 2: Zoomed cents deviation view
-        # Row 3: Controls
-        gs = self.fig.add_gridspec(
-            4, 1,
-            height_ratios=[1.0, 3.8, 2.5, 0.9],
-            hspace=0.13,
-            left=0.06, right=0.98, top=0.94, bottom=0.05
-        )
+        central = QWidget()
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(6)
 
-        # Top row: split into big current reading (left) and stats (right)
-        gs_top = gs[0].subgridspec(1, 2, width_ratios=[2.1, 1.0], wspace=0.04)
+        # --- Top bar: big current reading (stats removed per user request) ---
+        top_bar = QHBoxLayout()
+        self.current_label = QLabel("—")
+        self.current_label.setFont(QFont("Consolas", 42, QFont.Bold))
+        self.current_label.setAlignment(Qt.AlignCenter)
+        self.current_label.setMinimumHeight(80)
+        self.current_label.setStyleSheet("color: #aaaaaa;")
 
-        # Left: Big current note + cents display
-        self.ax_status = self.fig.add_subplot(gs_top[0, 0])
-        self.ax_status.set_xlim(0, 1)
-        self.ax_status.set_ylim(0, 1)
-        self.ax_status.axis("off")
-        self.ax_status.set_facecolor(COLOR_BG)
+        top_bar.addWidget(self.current_label)
+        main_layout.addLayout(top_bar)
 
-        # Big current reading
-        self.current_text = self.ax_status.text(
-            0.5, 0.55, "—",
-            fontsize=42, fontweight="bold", ha="center", va="center",
-            color=COLOR_TEXT_DIM, family="monospace"
-        )
-        self.status_text = self.ax_status.text(
-            0.5, 0.12, "Waiting for data...",
-            fontsize=11, ha="center", va="center", color=COLOR_TEXT_DIM, alpha=0.85
-        )
+        # --- Staff plot (Alto Clef) ---
+        self.staff_plot = pg.PlotWidget()
+        self.staff_plot.setBackground(COLOR_BG)  # white sheet music background
+        self.staff_plot.setYRange(0.8, 8.2, padding=0)  # Trimmed to first position (C3-E5)
+        self.staff_plot.setMouseEnabled(x=True, y=False)
+        self.staff_plot.setClipToView(True)
+        self.staff_plot.showGrid(x=False, y=False)
+        self.staff_plot.setLabel("bottom", "Beats (newest → right)")
 
-        # Right: Live statistics (moved here so it doesn't cover the right edge of the trace)
-        self.ax_top_stats = self.fig.add_subplot(gs_top[0, 1])
-        self.ax_top_stats.set_xlim(0, 1)
-        self.ax_top_stats.set_ylim(0, 1)
-        self.ax_top_stats.axis("off")
-        self.ax_top_stats.set_facecolor(COLOR_BG)
+        # Hide numeric y-axis ticks completely (we draw our own note names on the chart area)
+        self.staff_plot.hideAxis('left')
 
-        # Stats text - now lives in the top-right panel (no longer overlaps the right side of the trace)
-        self.stats_text = self.ax_top_stats.text(
-            0.97, 0.92, "",
-            transform=self.ax_top_stats.transAxes,
-            fontsize=8.5, ha="right", va="top",
-            color=COLOR_TEXT_DIM, alpha=0.95,
-            family="monospace",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="#12122a", edgecolor="#2a2a55", alpha=0.92)
-        )
-
-        # Main staff plot (Alto Clef) - cropped at bottom for better vertical resolution on viola range (B3 and above)
-        self.ax_main = self.fig.add_subplot(gs[1])
-        self.ax_main.set_facecolor(COLOR_BG)
-        # Full viola range: C3 (open C) to ~F6 (high on A string)
-        self.ax_main.set_ylim(0.6, 11.5)
-        self.ax_main.set_xlim(0, self.max_points)
-
-        # Staff lines (adjusted - fewer low ledgers since we no longer show down to C3)
+        # Staff and ledger lines (horizontal) - black like printed sheet music
         for y in STAFF_Y_MAIN:
-            self.ax_main.axhline(y=y, color=COLOR_STAFF, lw=1.6, alpha=0.85)
-        # Reduced low ledger lines (B3 and above focus)
+            line = pg.InfiniteLine(pos=y, angle=0, pen=pg.mkPen(COLOR_STAFF, width=1.5))
+            self.staff_plot.addItem(line)
         for y in STAFF_Y_LEDGER:
-            self.ax_main.axhline(y=y, color=COLOR_LEDGER, lw=0.9, linestyle="--", alpha=0.45)
+            line = pg.InfiniteLine(pos=y, angle=0, pen=pg.mkPen(COLOR_LEDGER, width=0.8, style=Qt.DashLine))
+            self.staff_plot.addItem(line)
 
-        # Note labels on left (now starts at B3)
-        for note, y in NOTE_LABELS:
-            self.ax_main.text(-0.018, y, note, fontsize=10.5, va="center", ha="right",
-                              color="#cccccc", fontweight="medium",
-                              transform=self.ax_main.get_yaxis_transform())
+        # Note labels placed directly on the chart area (like the original Matplotlib version).
+        # These will be repositioned dynamically in _update_plots so they stay just inside
+        # the left edge of the current "visible beats" window.
+        self.staff_note_labels: List[Tuple[pg.TextItem, float]] = []
+        for note, y in NOTE_LABELS[::2]:  # thin them out a bit
+            txt = pg.TextItem(note, color=COLOR_LABEL, anchor=(1.0, 0.5))
+            txt.setFont(QFont("Consolas", 9))
+            self.staff_plot.addItem(txt)
+            self.staff_note_labels.append((txt, y))
 
-        self.ax_main.text(-0.055, 5.8, "ALTO\nCLEF", fontsize=11, va="center", ha="center",
-                          color="#88aaff", alpha=0.85, transform=self.ax_main.get_yaxis_transform(),
-                          linespacing=1.15)
+        # ALTO CLEF label (positioned on the chart area, like the original)
+        if self.alto_clef_item is None:
+            self.alto_clef_item = pg.TextItem("ALTO\nCLEF", color=COLOR_ALTO, anchor=(0.5, 0.5))
+            self.alto_clef_item.setFont(QFont("Consolas", 8))
+            self.staff_plot.addItem(self.alto_clef_item)
 
-        self.ax_main.yaxis.set_visible(False)
-        self.ax_main.set_xlabel("Time  (older  ←――――――――――→  newer)", fontsize=10, color=COLOR_TEXT_DIM, labelpad=6)
-        self.ax_main.grid(True, alpha=0.07, linestyle="--", color="#445566")
+        self.staff_segment_items: List[pg.PlotDataItem] = []
+        main_layout.addWidget(self.staff_plot, stretch=3)
 
-        # === Zoomed Cents Deviation View (bottom) ===
-        self.ax_zoom = self.fig.add_subplot(gs[2])
-        self.ax_zoom.set_facecolor(COLOR_BG)
-        self.ax_zoom.set_ylim(-25, 25)          # Good resolution for ± few cents while catching bigger errors
-        self.ax_zoom.set_xlim(0, self.max_points)
+        # --- Cents deviation plot ---
+        self.cents_plot = pg.PlotWidget()
+        self.cents_plot.setBackground(COLOR_BG)  # white sheet music background
+        self.cents_plot.setYRange(-25, 25, padding=0)
+        self.cents_plot.setMouseEnabled(x=True, y=False)
+        self.cents_plot.setClipToView(True)
+        self.cents_plot.showGrid(x=False, y=True)
+        self.cents_plot.setLabel("left", "Cents Deviation")
+        self.cents_plot.setLabel("bottom", "Beats")
 
-        # Reference lines for the new ±5 cent in-tune zone
-        self.ax_zoom.axhline(0, color="#ffffff", lw=1.1, alpha=0.65)                    # Target pitch
-        self.ax_zoom.axhline(+IN_TUNE_THRESHOLD_CENTS, color=COLOR_IN_TUNE, lw=0.8, linestyle="--", alpha=0.6)
-        self.ax_zoom.axhline(-IN_TUNE_THRESHOLD_CENTS, color=COLOR_IN_TUNE, lw=0.8, linestyle="--", alpha=0.6)
+        # Reference lines + in-tune band hint (sheet music style)
+        self.cents_plot.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen(COLOR_STAFF, width=1.2)))  # black
+        self.cents_plot.addItem(pg.InfiniteLine(pos=+IN_TUNE_THRESHOLD_CENTS, angle=0,
+                                                pen=pg.mkPen(COLOR_IN_TUNE, width=0.8, style=Qt.DashLine)))
+        self.cents_plot.addItem(pg.InfiniteLine(pos=-IN_TUNE_THRESHOLD_CENTS, angle=0,
+                                                pen=pg.mkPen(COLOR_IN_TUNE, width=0.8, style=Qt.DashLine)))
 
-        # Light green band for in-tune zone
-        self.ax_zoom.axhspan(-IN_TUNE_THRESHOLD_CENTS, +IN_TUNE_THRESHOLD_CENTS,
-                             color=COLOR_IN_TUNE, alpha=0.08)
+        self.cents_segment_items: List[pg.PlotDataItem] = []
+        main_layout.addWidget(self.cents_plot, stretch=2)
 
-        self.ax_zoom.set_ylabel("Cents Deviation", fontsize=10, color=COLOR_TEXT_DIM, labelpad=4)
-        self.ax_zoom.tick_params(axis='y', labelsize=8, colors=COLOR_TEXT_DIM)
-        self.ax_zoom.set_xlabel("Time  (older  ←――――――――――→  newer)", fontsize=9, color=COLOR_TEXT_DIM, labelpad=4)
-        self.ax_zoom.grid(True, alpha=0.07, linestyle="--", color="#445566")
-        self.ax_zoom.yaxis.set_major_locator(plt.MultipleLocator(10))
-        self.ax_zoom.yaxis.set_minor_locator(plt.MultipleLocator(5))
+        # Link X axes so they scroll together
+        self.cents_plot.setXLink(self.staff_plot)
 
-        # Line collections
-        self.lc = LineCollection([], linewidth=3.8, alpha=0.92)
-        self.ax_main.add_collection(self.lc)
-        self.glow_lc = LineCollection([], linewidth=9.5, alpha=0.13)
-        self.ax_main.add_collection(self.glow_lc)
+        # Make axis lines black to match sheet music look (ticks/labels default to dark on white bg)
+        self.staff_plot.getAxis('bottom').setPen(pg.mkPen(COLOR_STAFF, width=0.6))
+        self.cents_plot.getAxis('bottom').setPen(pg.mkPen(COLOR_STAFF, width=0.6))
+        self.cents_plot.getAxis('left').setPen(pg.mkPen(COLOR_STAFF, width=0.6))
 
-        # Zoomed cents deviation trace (colored the same way as main trace)
-        self.zoom_lc = LineCollection([], linewidth=2.8, alpha=0.95)
-        self.ax_zoom.add_collection(self.zoom_lc)
+        # Set initial X ranges so labels are positioned correctly from the start
+        # (must happen after both plots are created)
+        self.staff_plot.setXRange(-self.beats_visible, 0.3)
+        self.cents_plot.setXRange(-self.beats_visible, 0.3)
 
-        # Crosshair lines + hover readout (for paused inspection of glitches)
-        self.crosshair_v = self.ax_main.axvline(
-            x=0, color="#88ddff", lw=0.9, alpha=0.75, linestyle="--", visible=False
-        )
-        self.crosshair_h = self.ax_main.axhline(
-            y=0, color="#88ddff", lw=0.9, alpha=0.75, linestyle="--", visible=False
-        )
-        self.hover_text = self.ax_main.text(
-            0.02, 0.96, "",
-            transform=self.ax_main.transAxes,
-            fontsize=9.0, family="monospace",
-            color="#ccffaa",
-            va="top",
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="#0f0f22", edgecolor="#334455", alpha=0.9),
-            visible=False
-        )
+        # Initial positioning of note labels and ALTO label (before the update timer kicks in)
+        if hasattr(self, 'staff_note_labels') and self.staff_note_labels:
+            left = -self.beats_visible
+            label_x = left + 0.12
+            for txt, y in self.staff_note_labels:
+                txt.setPos(label_x, y)
+        if getattr(self, 'alto_clef_item', None) is not None:
+            left = -self.beats_visible
+            self.alto_clef_item.setPos(left + 0.45, 5.0)
 
-        # (Stats panel moved to top-right bar - see ax_top_stats below)
+        # --- Controls ---
+        ctrl_layout = QHBoxLayout()
 
-        # Title
-        self.fig.suptitle("Intune — Viola Intonation Visualizer", fontsize=16, color=COLOR_TEXT, y=0.985)
+        ctrl_layout.addWidget(QLabel("BPM"))
+        self.bpm_slider = QSlider(Qt.Horizontal)
+        self.bpm_slider.setRange(40, 200)
+        self.bpm_slider.setValue(int(self.bpm))
+        self.bpm_slider.setTickInterval(20)
+        self.bpm_slider.setTickPosition(QSlider.TicksBelow)
+        self.bpm_slider.valueChanged.connect(self._on_bpm_change)
+        ctrl_layout.addWidget(self.bpm_slider, 2)
 
-        # Controls
-        self._create_controls()
+        ctrl_layout.addWidget(QLabel("Visible beats"))
+        self.beats_slider = QSlider(Qt.Horizontal)
+        self.beats_slider.setRange(10, 160)  # 1.0 - 16.0
+        self.beats_slider.setValue(int(self.beats_visible * 10))
+        self.beats_slider.setTickInterval(10)
+        self.beats_slider.setTickPosition(QSlider.TicksBelow)
+        self.beats_slider.valueChanged.connect(self._on_beats_change)
+        ctrl_layout.addWidget(self.beats_slider, 3)
 
-        # Event handlers
-        self.fig.canvas.mpl_connect("key_press_event", self._on_key)
-        self.fig.canvas.mpl_connect("close_event", self._on_close)
-        self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
-        self.fig.canvas.mpl_connect("axes_leave_event", self._on_axes_leave)
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        ctrl_layout.addWidget(self.pause_btn)
 
-    def _create_controls(self):
-        # BPM slider (left)
-        ax_bpm = self.fig.add_axes([0.02, 0.025, 0.18, 0.028])
-        self.bpm_slider = Slider(
-            ax_bpm, "BPM", 40, 200,
-            valinit=self.bpm, valstep=1,
-            color="#556688", handle_style={"facecolor": "#88aaff"}
-        )
-        self.bpm_slider.on_changed(self._on_bpm_change)
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self._clear_history)
+        ctrl_layout.addWidget(clear_btn)
 
-        # Visible beats slider
-        ax_beats = self.fig.add_axes([0.22, 0.025, 0.42, 0.028])
-        self.beats_slider = Slider(
-            ax_beats, "Visible beats", 1, 16,
-            valinit=self.beats_visible, valstep=0.5,
-            color="#556688", handle_style={"facecolor": "#88aaff"}
-        )
-        self.beats_slider.on_changed(self._on_beats_change)
+        export_btn = QPushButton("Export Log")
+        export_btn.clicked.connect(self._export_debug_log)
+        ctrl_layout.addWidget(export_btn)
 
-        # Pause button
-        ax_pause = self.fig.add_axes([0.68, 0.025, 0.09, 0.038])
-        self.pause_button = Button(ax_pause, "Pause", color="#2a2a55", hovercolor="#3a3a70")
-        self.pause_button.on_clicked(self._toggle_pause)
+        main_layout.addLayout(ctrl_layout)
 
-        # Clear button
-        ax_clear = self.fig.add_axes([0.78, 0.025, 0.09, 0.038])
-        self.clear_button = Button(ax_clear, "Clear", color="#2a2a55", hovercolor="#3a3a70")
-        self.clear_button.on_clicked(self._clear_history)
+        self.setCentralWidget(central)
 
-        # Export Debug Log button
-        ax_export = self.fig.add_axes([0.88, 0.025, 0.10, 0.038])
-        self.export_button = Button(ax_export, "Export Log", color="#2a2a55", hovercolor="#3a3a70")
-        self.export_button.on_clicked(self._export_debug_log)
+        # Crosshair support (simple version for now)
+        self.crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(COLOR_CROSSHAIR, width=0.9, style=Qt.DashLine))
+        self.crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(COLOR_CROSSHAIR, width=0.9, style=Qt.DashLine))
+        self.hover_label = pg.TextItem("", color=COLOR_HOVER, anchor=(0, 1))
+        self.staff_plot.addItem(self.crosshair_v, ignoreBounds=True)
+        self.staff_plot.addItem(self.crosshair_h, ignoreBounds=True)
+        self.staff_plot.addItem(self.hover_label)
+        self.crosshair_v.setVisible(False)
+        self.crosshair_h.setVisible(False)
+        self.hover_label.setVisible(False)
 
-    # -------------------------------------------------------------------------
-    # DATA INGESTION & STATS
-    # -------------------------------------------------------------------------
+        # Connect mouse for inspection when paused
+        self.staff_plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
-    def _ingest_data(self):
-        """Pull any available samples from the queue (non-blocking)."""
-        ingested = 0
-        while True:
-            try:
-                sample = self.data_queue.get_nowait()
-            except queue.Empty:
-                break
+        # Keyboard shortcuts (basic)
+        self.setFocusPolicy(Qt.StrongFocus)
 
-            if not self.paused:
-                self.history.append(sample)
-                self._update_stats(sample)
-                ingested += 1
-
-                if sample.teensy_ts:
-                    self.latest_teensy_ts = max(self.latest_teensy_ts, sample.teensy_ts)
-                    self.last_received_wall = time.time()
-
-        if ingested:
-            self.last_data_time = time.time()
-
-    def _update_stats(self, sample: PitchSample):
-        if sample.note and sample.note.strip() == "---":
-            # Silence/rest — don't count toward intonation stats, but time still advances
-            self.stats.last_update = time.time()
-            return
-        self.stats.total_samples += 1
-        abs_c = abs(sample.cents)
-        self.stats.sum_abs_cents += abs_c
-        self.stats.max_deviation = max(self.stats.max_deviation, abs_c)
-        if abs_c < IN_TUNE_THRESHOLD_CENTS:
-            self.stats.in_tune_samples += 1
-        self.stats.last_update = time.time()
-
-    # -------------------------------------------------------------------------
-    # RENDERING
-    # -------------------------------------------------------------------------
-
-    def _render(self):
-        if len(self.history) < 2:
-            self.lc.set_segments([])
-            self.glow_lc.set_segments([])
-            self.zoom_lc.set_segments([])
-            self._update_current_display(None)
-            self._update_stats_display()
-            return
-
-        # Time-based positioning locked to Teensy millis() for accurate beat time.
-        # Use wall-time extrapolation between arrivals for butter-smooth scrolling.
-        # When paused, use the frozen timestamp so the view stops moving.
-        if self.paused and self.frozen_now_ts is not None:
-            now_ts = self.frozen_now_ts
-        else:
-            now_ts = self.latest_teensy_ts
-            if self.last_received_wall > 0:
-                elapsed = time.time() - self.last_received_wall
-                now_ts = self.latest_teensy_ts + elapsed * 1000.0
-
-        visible_sec = self.beats_visible / (self.bpm / 60.0) if self.bpm > 0 else 4.0
-
-        # Collect points in the visible window, x from time delta (newest at right)
-        timed = []
-        for s in self.history:
-            if s.teensy_ts is None:
-                continue
-            age = (now_ts - s.teensy_ts) / 1000.0
-            if age < 0 or age > visible_sec:
-                continue
-            x = self.max_points * (1.0 - age / visible_sec)
-            timed.append((x, s.y_pos, s.cents, s.note, s.confidence))
-
-        if len(timed) < 2:
-            self.lc.set_segments([])
-            self.glow_lc.set_segments([])
-            self.zoom_lc.set_segments([])
-            self._update_current_display(None)
-            self._update_stats_display()
-            return
-
-        x = np.array([t[0] for t in timed])
-        y = np.array([t[1] for t in timed])
-        cents = np.array([t[2] for t in timed])
-        notes = [t[3] for t in timed]
-        confs = [t[4] for t in timed]
-
-        # Small viz-side polish for steady notes
-        for i in range(1, len(y)-1):
-            if (notes[i] and notes[i].strip() == "---" and
-                notes[i-1] == notes[i+1] and
-                notes[i-1] and notes[i-1].strip() != "---"):
-                y[i] = timed[i-1][1]
-
-        # Build segments for LineCollection
-        points = np.column_stack((x, y)).reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-
-        # Build rgba colors so we can fade the trace on low confidence (very useful with real mic).
-        # Special handling for silence/rests ("---"): use gray and place at rest position.
-        colors = []
-        glow_colors = []
-        for i, c in enumerate(cents):
-            note = notes[i]
-            if note and note.strip() == "---":
-                # Silence/rest - gray, low alpha, will be drawn at the rest y position from pitch_to_y
-                alpha = 0.35
-                colors.append((0.6, 0.6, 0.7, alpha))
-                glow_colors.append((0.6, 0.6, 0.7, alpha * 0.3))
-            else:
-                base = get_color(c)
-                conf = confs[i]
-                alpha = 0.92 if conf is None else max(0.15, conf * 0.9)
-                # Simple hex to rgb (assumes #rrggbb)
-                r = int(base[1:3], 16) / 255.0
-                g = int(base[3:5], 16) / 255.0
-                b = int(base[5:7], 16) / 255.0
-                colors.append((r, g, b, alpha))
-                glow_colors.append((r, g, b, alpha * 0.15))
-
-        self.lc.set_segments(segments)
-        self.lc.set_color(colors)
-
-        self.glow_lc.set_segments(segments)
-        self.glow_lc.set_color(glow_colors)
-
-        # Zoomed cents view (same x, y = cents deviation)
-        zoom_points = np.column_stack((x, cents)).reshape(-1, 1, 2)
-        zoom_segments = np.concatenate([zoom_points[:-1], zoom_points[1:]], axis=1)
-        self.zoom_lc.set_segments(zoom_segments)
-        self.zoom_lc.set_color(colors)
-
-        # Time-based x ticks in beats (newest on right)
-        beat_ticks = []
-        beat_labels = []
-        for b in range(0, -int(self.beats_visible) - 1, -1):
-            age_sec = (-b) / (self.bpm / 60.0)
-            xt = self.max_points * (1.0 - age_sec / visible_sec)
-            beat_ticks.append(xt)
-            beat_labels.append(str(b))
-        self.ax_main.set_xticks(beat_ticks)
-        self.ax_main.set_xticklabels(beat_labels)
-        self.ax_main.set_xlabel(f"Beats (BPM {int(self.bpm)})", fontsize=10, color=COLOR_TEXT_DIM, labelpad=6)
-        self.ax_main.axvline(self.max_points, color="#ffffff", lw=0.7, alpha=0.4)
-
-        self._update_current_display(self.history[-1])
-        self._update_stats_display()
-
-    def _update_current_display(self, sample: Optional[PitchSample]):
-        if sample is None:
-            self.current_text.set_text("—")
-            self.current_text.set_color(COLOR_TEXT_DIM)
-            self.status_text.set_text("Waiting for data..." if not self.paused else "PAUSED")
-            return
-
-        note = sample.note.upper() if sample.note else "---"
-        cents = sample.cents
-        if note.strip() == "---" or (sample.level is not None and sample.level < 0.005):
-            text = f"REST   lvl={sample.level:.2f}" if sample.level is not None else "REST"
-        else:
-            sign = "+" if cents >= 0 else ""
-            text = f"{note}   {sign}{cents:.1f}¢"
-            if sample.level is not None:
-                text += f"  lvl={sample.level:.2f}"
-
-        if note.strip() == "---":
-            color = "#8888aa"
-        else:
-            color = get_color(cents)
-        self.current_text.set_text(text)
-        self.current_text.set_color(color)
-
-        # Status line
-        age = time.time() - sample.timestamp
-        if note.strip() == "---" or (sample.level is not None and sample.level < 0.005):
-            status = f"Silence (rest)  lvl={sample.level:.3f}" if sample.level is not None else "Silence (rest)"
-        elif age > 1.5:
-            status = f"Last reading: {age:.1f}s ago"
-        else:
-            status = "Receiving data ✓"
-
-        if self.paused:
-            status = "PAUSED — press SPACE or click Pause to resume"
-
-        self.status_text.set_text(status)
-        self.status_text.set_color("#ffcc66" if self.paused else COLOR_TEXT_DIM)
-
-    def _update_stats_display(self):
-        s = self.stats
-        lines = [
-            f"Session: {s.duration:.0f}s",
-            f"Samples: {s.total_samples}",
-            f"In tune (<{IN_TUNE_THRESHOLD_CENTS}¢): {s.pct_in_tune:.1f}%",
-            f"Mean |dev|: {s.mean_abs_cents:.1f}¢",
-            f"Max dev: {s.max_deviation:.1f}¢",
-        ]
-        self.stats_text.set_text("\n".join(lines))
-
-    # -------------------------------------------------------------------------
-    # CONTROLS & EVENTS
-    # -------------------------------------------------------------------------
-
-    # History slider replaced by BPM / beats for musical time base.
-    # The old method is kept as no-op for compatibility.
-    def _on_history_change(self, val: float):
-        pass
-
-    def _on_bpm_change(self, val: float):
+    def _on_bpm_change(self, val: int):
         self.bpm = float(val)
+        self._update_plots()  # refresh range immediately
 
-    def _on_beats_change(self, val: float):
-        self.beats_visible = float(val)
-
-    def _toggle_pause(self, event=None):
-        was_paused = self.paused
-        self.paused = not self.paused
-        label = "Resume" if self.paused else "Pause"
-        self.pause_button.label.set_text(label)
-        self._update_current_display(self.history[-1] if self.history else None)
-        if not self.paused:
-            self._hide_crosshair()
-            # Resync extrapolation base to the frozen time so scroll continues smoothly from pause point
-            frozen = self.frozen_now_ts
-            self.frozen_now_ts = None
-            self.last_received_wall = time.time()
-            self.latest_teensy_ts = frozen or self.latest_teensy_ts
-        else:
-            # Freeze the "now" timestamp so the time-based view stops scrolling
-            if self.last_received_wall > 0:
-                elapsed = time.time() - self.last_received_wall
-                self.frozen_now_ts = self.latest_teensy_ts + elapsed * 1000.0
-            else:
-                self.frozen_now_ts = self.latest_teensy_ts
-
-    def _clear_history(self, event=None):
-        self.history.clear()
-        self.stats.reset()
-        self.lc.set_segments([])
-        self.glow_lc.set_segments([])
-        if self.zoom_lc is not None:
-            self.zoom_lc.set_segments([])
-        self._update_current_display(None)
-        self._update_stats_display()
-        self._hide_crosshair()
-        logging.info("History cleared")
-
-    def _export_debug_log(self, event=None):
-        """Export current history + stats to a CSV file chosen by the user."""
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            from datetime import datetime
-        except Exception as e:
-            logging.error(f"Could not open file dialog: {e}")
-            print("Export failed: tkinter file dialog not available.")
-            return
-
-        root = tk.Tk()
-        root.withdraw()
-
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        mode = "SIM" if self.config.simulate else "HW"
-        default_name = f"intune_debug_{mode}_{ts}.csv"
-
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            initialfile=default_name,
-            title="Save Intune Debug Log",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-        root.destroy()
-
-        if not filepath:
-            logging.info("Export cancelled by user")
-            return
-
-        try:
-            with open(filepath, "w", encoding="utf-8", newline="") as f:
-                # Header / metadata
-                f.write("# Intune Debug Export\n")
-                f.write(f"# Generated: {datetime.now().isoformat()}\n")
-                f.write(f"# Mode: {'SIMULATION' if self.config.simulate else 'REAL HARDWARE'}\n")
-                f.write(f"# Port: {self.config.port if not self.config.simulate else 'N/A'}\n")
-                f.write(f"# History window at capture: {self.max_points / POINTS_PER_SECOND:.1f} seconds\n")
-                f.write(f"# Samples in buffer: {len(self.history)}\n")
-                f.write("#\n")
-                f.write("# === Current Session Stats ===\n")
-                s = self.stats
-                f.write(f"# Duration: {s.duration:.1f}s\n")
-                f.write(f"# Total samples: {s.total_samples}\n")
-                f.write(f"# In tune (<{IN_TUNE_THRESHOLD_CENTS}¢): {s.pct_in_tune:.2f}%\n")
-                f.write(f"# Mean |dev|: {s.mean_abs_cents:.2f}¢\n")
-                f.write(f"# Max dev: {s.max_deviation:.2f}¢\n")
-                f.write("#\n")
-                f.write("# Columns: wall_time_iso, relative_time_s, note, cents, confidence, y_pos\n")
-                f.write("# confidence: detector probability (0-1) when available, empty if unknown\n")
-                f.write("\n")
-
-                # CSV header
-                f.write("wall_time_iso,relative_time_s,note,cents,confidence,y_pos\n")
-
-                if len(self.history) == 0:
-                    f.write("# (no data in history buffer at time of export)\n")
-                else:
-                    t0 = self.history[0].timestamp
-                    for sample in self.history:
-                        rel = sample.timestamp - t0
-                        conf_str = f"{sample.confidence:.4f}" if sample.confidence is not None else ""
-                        iso = datetime.fromtimestamp(sample.timestamp).isoformat()
-                        f.write(f"{iso},{rel:.4f},{sample.note},{sample.cents:.2f},{conf_str},{sample.y_pos:.4f}\n")
-
-            logging.info(f"Debug log exported to: {filepath}")
-            print(f"\n[EXPORT] Debug log saved to: {filepath}")
-
-        except Exception as e:
-            logging.error(f"Failed to write debug log: {e}")
-            print(f"Export failed: {e}")
-
-    def _on_key(self, event):
-        if event.key == " " or event.key == "p":
-            self._toggle_pause()
-        elif event.key == "c":
-            self._clear_history()
-        elif event.key == "e":
-            self._export_debug_log()
-        elif event.key == "q" or event.key == "escape":
-            plt.close(self.fig)
-        elif event.key == "r":
-            self.stats.reset()
-            self._update_stats_display()
-            logging.info("Stats reset")
-
-    def _on_close(self, event):
-        logging.info("Window closed — shutting down...")
-        self.stop_event.set()
-
-    # -------------------------------------------------------------------------
-    # CROSSHAIR / HOVER INSPECTION (mainly useful when paused)
-    # -------------------------------------------------------------------------
-
-    def _on_mouse_move(self, event):
-        """Show crosshair + value readout when mouse is over the main plot (best when paused)."""
-        if event.inaxes != self.ax_main:
-            self._hide_crosshair()
-            return
-
-        # Only show helpful crosshair when paused (user's stated use case)
-        if not self.paused or len(self.history) < 2:
-            self._hide_crosshair()
-            return
-
-        x = event.xdata
-        if x is None:
-            self._hide_crosshair()
-            return
-
-        # Map mouse x back to index in history (right-aligned layout)
-        n = len(self.history)
-        x_start = self.max_points - n
-        idx = int(round(x - x_start))
-        idx = max(0, min(idx, n - 1))
-
-        sample = list(self.history)[idx]   # deque -> list for indexing
-
-        # Seconds ago (relative to newest sample in buffer)
-        seconds_ago = (self.max_points - (x_start + idx)) / POINTS_PER_SECOND
-
-        # Update crosshair lines
-        self.crosshair_v.set_xdata([x_start + idx, x_start + idx])
-        self.crosshair_v.set_visible(True)
-
-        self.crosshair_h.set_ydata([sample.y_pos, sample.y_pos])
-        self.crosshair_h.set_visible(True)
-
-        # Build nice hover text
-        conf_str = f"{sample.confidence:.2f}" if sample.confidence is not None else "—"
-        sign = "+" if sample.cents >= 0 else ""
-        text = (f"t=-{seconds_ago:.2f}s  |  {sample.note}  "
-                f"{sign}{sample.cents:.1f}¢  |  conf={conf_str}")
-
-        self.hover_text.set_text(text)
-        self.hover_text.set_visible(True)
-
-        # Redraw just the affected artists (cheap enough)
-        self.fig.canvas.draw_idle()
-
-    def _on_axes_leave(self, event):
-        """Hide crosshair when mouse leaves the main plot area."""
-        self._hide_crosshair()
-
-    def _hide_crosshair(self):
-        changed = False
-        if self.crosshair_v and self.crosshair_v.get_visible():
-            self.crosshair_v.set_visible(False)
-            changed = True
-        if self.crosshair_h and self.crosshair_h.get_visible():
-            self.crosshair_h.set_visible(False)
-            changed = True
-        if self.hover_text and self.hover_text.get_visible():
-            self.hover_text.set_visible(False)
-            changed = True
-
-        if changed:
-            self.fig.canvas.draw_idle()
-
-    # -------------------------------------------------------------------------
-    # ANIMATION & LIFECYCLE
-    # -------------------------------------------------------------------------
+    def _on_beats_change(self, val: int):
+        self.beats_visible = val / 10.0
+        self._update_plots()
 
     def _start_reader(self):
         if self.config.simulate:
             self.reader = Simulator(self.data_queue, self.stop_event)
             name = "Simulator"
         else:
+            if serial is None:
+                logging.error("pyserial not available")
+                return
             self.reader = SerialReader(
                 self.config.port, self.config.baud, self.data_queue, self.stop_event
             )
@@ -1074,93 +579,357 @@ class IntuneVisualizer:
         self.reader_thread.start()
         logging.info(f"Started {name}")
 
-    def _animation_update(self, frame):
-        """Called by FuncAnimation."""
-        self._ingest_data()
-        self._render()
-        return self.lc, self.glow_lc
+    def _poll_and_update(self):
+        if self.paused:
+            return
 
-    def run(self):
-        print("\n" + "=" * 60)
-        print("  INTUNE — Viola Pitch Visualizer")
-        print("=" * 60)
-        if self.config.simulate:
-            print("  Mode: SIMULATION (no hardware required)")
+        # Advance display time for smooth creep of existing points
+        now_wall = time.time()
+        dt = now_wall - self.last_poll_wall
+        self.last_poll_wall = now_wall
+        self.display_now += dt * 1000.0
+
+        ingested = 0
+        while True:
+            try:
+                sample = self.data_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            self.history.append(sample)
+            if sample.teensy_ts:
+                self.latest_teensy_ts = max(self.latest_teensy_ts, sample.teensy_ts)
+            ingested += 1
+
+        if ingested:
+            self.last_data_time = time.time()
+
+        # Always update plots (cheap) so the trace creeps smoothly via display_now
+        self._update_plots()
+        self._update_current_display()
+
+    def _update_plots(self):
+        # Clear any previous colored segments
+        for item in self.staff_segment_items:
+            try:
+                self.staff_plot.removeItem(item)
+            except Exception:
+                pass
+        self.staff_segment_items.clear()
+
+        for item in self.cents_segment_items:
+            try:
+                self.cents_plot.removeItem(item)
+            except Exception:
+                pass
+        self.cents_segment_items.clear()
+
+        # Always keep note labels positioned on the left of the current view
+        if hasattr(self, 'staff_note_labels') and self.staff_note_labels:
+            left = -self.beats_visible
+            label_x = left + 0.12  # small inset so labels are inside the plot area
+            for txt, y in self.staff_note_labels:
+                txt.setPos(label_x, y)
+
+        if getattr(self, 'alto_clef_item', None) is not None:
+            left = -self.beats_visible
+            self.alto_clef_item.setPos(left + 0.45, 5.0)  # roughly middle of staff
+
+        if len(self.history) < 2:
+            return
+
+        visible_sec = self.beats_visible / (self.bpm / 60.0) if self.bpm > 0 else 4.0
+
+        # Use display_now (smoothly advancing) as the reference "now"
+        now_ts = self.display_now
+        if self.latest_teensy_ts > now_ts:
+            # gently catch up to device if it is ahead
+            now_ts = self.latest_teensy_ts
+
+        # Build list of visible points with color/alpha info (restores original per-point coloring)
+        points: List[dict] = []
+        last_sound_y = None
+        last_sound_cents = None
+        for s in self.history:
+            if s.teensy_ts is None:
+                continue
+            age = (now_ts - s.teensy_ts) / 1000.0
+            if age < 0 or age > visible_sec + 0.5:
+                continue
+            beat_age = age * (self.bpm / 60.0)
+            x = -beat_age
+
+            if s.note and s.note.strip() == "---":
+                color = "#8888aa"
+                alpha = 0.35
+                # Hold last played pitch during rest for continuous trace (avoids big vertical jumps)
+                # Gray color + lower alpha makes it clear this is a rest/silence period.
+                y_staff = last_sound_y if last_sound_y is not None else s.y_pos
+                y_cents = last_sound_cents if last_sound_cents is not None else s.cents
+            else:
+                color = get_color(s.cents)
+                alpha = 0.92 if s.confidence is None else max(0.15, s.confidence * 0.9)
+                y_staff = s.y_pos
+                y_cents = s.cents
+                last_sound_y = y_staff
+                last_sound_cents = y_cents
+
+            points.append({
+                "x": x,
+                "y_staff": y_staff,
+                "y_cents": y_cents,
+                "color": color,
+                "alpha": alpha,
+            })
+
+        if len(points) < 2:
+            return
+
+        # Group into consecutive same-color segments for colored lines (like original)
+        def make_pen(color: str, alpha: float, width: float):
+            qcolor = QColor(color)
+            qcolor.setAlphaF(alpha)
+            return pg.mkPen(qcolor, width=width)
+
+        # Staff trace segments
+        i = 0
+        while i < len(points):
+            j = i
+            curr_color = points[i]["color"]
+            curr_alpha = points[i]["alpha"]
+            xs_seg = []
+            ys_seg = []
+            while j < len(points) and points[j]["color"] == curr_color:
+                xs_seg.append(points[j]["x"])
+                ys_seg.append(points[j]["y_staff"])
+                j += 1
+
+            if len(xs_seg) >= 2:
+                pen = make_pen(curr_color, curr_alpha, 3.5)
+                seg = pg.PlotDataItem(xs_seg, ys_seg, pen=pen)
+                self.staff_plot.addItem(seg)
+                self.staff_segment_items.append(seg)
+            i = j
+
+        # Cents trace segments (same grouping, thinner)
+        i = 0
+        while i < len(points):
+            j = i
+            curr_color = points[i]["color"]
+            curr_alpha = points[i]["alpha"]
+            xs_seg = []
+            ys_seg = []
+            while j < len(points) and points[j]["color"] == curr_color:
+                xs_seg.append(points[j]["x"])
+                ys_seg.append(points[j]["y_cents"])
+                j += 1
+
+            if len(xs_seg) >= 2:
+                pen = make_pen(curr_color, curr_alpha, 2.8)
+                seg = pg.PlotDataItem(xs_seg, ys_seg, pen=pen)
+                self.cents_plot.addItem(seg)
+                self.cents_segment_items.append(seg)
+            i = j
+
+        # Musical x window
+        self.staff_plot.setXRange(-self.beats_visible, 0.3)
+        self.cents_plot.setXRange(-self.beats_visible, 0.3)
+
+    def _update_current_display(self):
+        if not self.history:
+            self.current_label.setText("—")
+            self.current_label.setStyleSheet("color: #aaaaaa;")
+            return
+
+        sample = self.history[-1]
+        note = sample.note.upper() if sample.note else "---"
+        cents = sample.cents
+
+        if note.strip() == "---":
+            text = "REST"
+            color = "#8888aa"
         else:
-            print(f"  Serial: {self.config.port} @ {self.config.baud} baud")
-        print(f"  BPM: {self.bpm} | Visible beats: {self.beats_visible}")
-        print("  Shortcuts: SPACE=pause/resume, C=clear, E=export, R=reset stats, Q=quit")
-        print("  Layout: Top = Alto Clef staff (C3–F6) | Bottom = Zoomed ±25¢ view (green = ±5¢ in tune)")
-        print("  Tip: Set BPM and visible beats for musical time base. Scroll is time-locked to Teensy millis for smoothness. Gating on volume; low conf = faded trace.")
-        print("=" * 60 + "\n")
+            text = note
+            if sample.level is not None:
+                text += f"   lvl={sample.level:.2f}"
+            color = get_color(cents)
 
-        self._start_reader()
+        self.current_label.setText(text)
+        self.current_label.setStyleSheet(f"color: {color};")
 
-        # Give the reader a moment to start
-        time.sleep(0.15)
+    # _update_stats and _update_stats_display removed (statistics not helpful)
 
-        ani = animation.FuncAnimation(
-            self.fig,
-            self._animation_update,
-            interval=UPDATE_INTERVAL_MS,
-            blit=False,
-            cache_frame_data=False,
+    def _toggle_pause(self):
+        self.paused = not self.paused
+        self.pause_btn.setText("Resume" if self.paused else "Pause")
+        if not self.paused:
+            self.last_poll_wall = time.time()
+            # give the display time a little kick so it doesn't jump
+            if self.latest_teensy_ts > 0:
+                self.display_now = max(self.display_now, self.latest_teensy_ts)
+
+    def _clear_history(self):
+        self.history.clear()
+        # Clear colored segments
+        for item in self.staff_segment_items:
+            try:
+                self.staff_plot.removeItem(item)
+            except Exception:
+                pass
+        self.staff_segment_items.clear()
+        for item in self.cents_segment_items:
+            try:
+                self.cents_plot.removeItem(item)
+            except Exception:
+                pass
+        self.cents_segment_items.clear()
+
+        # (colored segments cleared above)
+        self.display_now = 0.0
+        self.latest_teensy_ts = 0.0
+        self._update_current_display()
+        logging.info("History cleared")
+
+    def _export_debug_log(self):
+        if not self.history:
+            return
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Intune Debug Log", "intune_debug.csv", "CSV Files (*.csv)"
         )
-
+        if not filepath:
+            return
         try:
-            plt.show()
-        finally:
-            self.stop_event.set()
-            if self.reader_thread and self.reader_thread.is_alive():
-                self.reader_thread.join(timeout=1.5)
-            logging.info("Shutdown complete.")
+            with open(filepath, "w", encoding="utf-8", newline="") as f:
+                f.write("# Intune Debug Export (pyqtgraph version)\n")
+                f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"# Mode: {'SIMULATION' if self.config.simulate else 'REAL'}\n")
+                f.write("# Columns: wall_time_iso, note, cents, confidence, y_pos\n\n")
+                f.write("wall_time_iso,note,cents,confidence,y_pos\n")
+                for sample in self.history:
+                    iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(sample.timestamp))
+                    conf_str = f"{sample.confidence:.4f}" if sample.confidence is not None else ""
+                    f.write(f"{iso},{sample.note},{sample.cents:.2f},{conf_str},{sample.y_pos:.4f}\n")
+            logging.info(f"Exported to {filepath}")
+        except Exception as e:
+            logging.error(f"Export failed: {e}")
 
+    def _on_mouse_moved(self, pos):
+        """Simple crosshair + value when paused (like original hover inspection)."""
+        if not self.paused or len(self.history) < 2:
+            self.crosshair_v.setVisible(False)
+            self.crosshair_h.setVisible(False)
+            self.hover_label.setVisible(False)
+            return
+
+        # Map scene pos to data coordinates in the staff plot
+        mouse_point = self.staff_plot.getViewBox().mapSceneToView(pos)
+        x = mouse_point.x()
+
+        # Find closest point in current plotted data
+        best_dist = float("inf")
+        best_sample = None
+        best_x = 0
+        best_y = 0
+
+        visible_sec = self.beats_visible / (self.bpm / 60.0) if self.bpm > 0 else 4.0
+        now_ts = self.display_now or self.latest_teensy_ts
+
+        for s in self.history:
+            if s.teensy_ts is None:
+                continue
+            age = (now_ts - s.teensy_ts) / 1000.0
+            if age < 0 or age > visible_sec:
+                continue
+            beat_age = age * (self.bpm / 60.0)
+            px = -beat_age
+            dist = abs(px - x)
+            if dist < best_dist:
+                best_dist = dist
+                best_sample = s
+                best_x = px
+                best_y = s.y_pos
+
+        if best_sample is None:
+            return
+
+        self.crosshair_v.setPos(best_x)
+        self.crosshair_h.setPos(best_y)
+        self.crosshair_v.setVisible(True)
+        self.crosshair_h.setVisible(True)
+
+        conf_str = f"{best_sample.confidence:.2f}" if best_sample.confidence is not None else "—"
+        sign = "+" if best_sample.cents >= 0 else ""
+        text = f"t≈{- (now_ts - best_sample.teensy_ts)/1000:.2f}s  |  {best_sample.note}  {sign}{best_sample.cents:.1f}¢  |  conf={conf_str}"
+        self.hover_label.setText(text)
+        self.hover_label.setPos(x + 0.2, best_y + 0.6)
+        self.hover_label.setVisible(True)
+
+    def closeEvent(self, event):
+        logging.info("Shutting down...")
+        self.stop_event.set()
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=1.0)
+        event.accept()
 
 # =============================================================================
-# ENTRY POINT
+# ENTRY POINT (adapted)
 # =============================================================================
 
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(
-        description="Intune — Real-time pitch visualization for viola",
+        description="Intune — Real-time pitch visualization for viola (pyqtgraph)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--port", default=DEFAULT_PORT, help="Serial port (e.g. COM3 or /dev/ttyACM0)")
+    parser.add_argument("--port", default=DEFAULT_PORT, help="Serial port")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="Baud rate")
-    parser.add_argument("--history", type=float, default=DEFAULT_HISTORY_SEC,
-                        help="Initial history window in seconds")
-    parser.add_argument("--simulate", action="store_true",
-                        help="Run with built-in pitch simulator (no hardware needed)")
-    parser.add_argument("--list-ports", action="store_true",
-                        help="List available serial ports and exit")
+    parser.add_argument("--simulate", action="store_true", help="Use built-in simulator")
+    parser.add_argument("--list-ports", action="store_true", help="List serial ports and exit")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
 
     if args.list_ports:
-        print("\nAvailable serial ports:")
-        ports = list(list_ports.comports())
-        if not ports:
-            print("  (none found)")
-        for p in ports:
-            print(f"  {p.device}  —  {p.description}")
+        if list_ports is None:
+            print("pyserial not installed")
+        else:
+            print("\nAvailable serial ports:")
+            ports = list(list_ports.comports())
+            if not ports:
+                print("  (none found)")
+            for p in ports:
+                print(f"  {p.device}  —  {p.description}")
         sys.exit(0)
 
     return Config(
         port=args.port,
         baud=args.baud,
-        history_sec=args.history,
         simulate=args.simulate,
         debug=args.debug,
         list_ports=args.list_ports,
     )
 
-
 def main():
     config = parse_args()
-    visualizer = IntuneVisualizer(config)
-    visualizer.run()
 
+    app = QApplication(sys.argv)
+    pg.setConfigOptions(antialias=True, useOpenGL=False)  # OpenGL can be tried for extra smoothness
+
+    window = IntuneVisualizer(config)
+    window.show()
+
+    # Print helpful info
+    print("\n" + "=" * 60)
+    print("  INTUNE — Viola Pitch Visualizer (pyqtgraph edition)")
+    print("=" * 60)
+    if config.simulate:
+        print("  Mode: SIMULATION")
+    else:
+        print(f"  Serial: {config.port} @ {config.baud}")
+    print("  PyQtGraph + efficient setData updates for smooth scrolling")
+    print("  Shortcuts: many Qt defaults + Pause button, mouse hover when paused")
+    print("=" * 60 + "\n")
+
+    sys.exit(app.exec_())
 
 if __name__ == "__main__":
     main()

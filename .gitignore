@@ -25,6 +25,16 @@ output.txt
 *.wav
 *.flac
 reference_audio/
+test_audio/
 
 # Generated analysis output
 visualizer/plots/
+
+# Raylib / CMake C++ visualizer (build artifacts)
+visualizer_raylib/build/
+visualizer_raylib/*.exe
+visualizer_raylib/*.pdb
+
+# Cursor / agent tooling (local only — not project source)
+mcps/
+terminals/

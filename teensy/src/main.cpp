@@ -53,7 +53,7 @@ void setup() {
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
   Serial.println("=== Constant-rate output (40 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
-  Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. Tune via DEBUG. ===");
+  Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. ===");
   
   // NoteFrequency (YIN-based). Low threshold so we get readings even on softer signals.
   // Gating is done purely on volume (level) below.
@@ -83,14 +83,6 @@ void loop() {
       haveYIN = (yinFreq > 50.0f);  // accept as long as it gives a freq; we'll use its prob as-is
     }
 
-    // Periodic debug so you can see actual numbers on serial monitor when playing
-    // (lines starting with DEBUG are ignored by the visualizer)
-    static uint32_t lastDebug = 0;
-    if (millis() - lastDebug > 250) {
-      lastDebug = millis();
-      Serial.printf("DEBUG level=%.4f prob=%.2f freq=%.1f\n", level, yinProb, yinFreq);
-    }
-
     // Gate *only* on volume (level), as requested.
     // Below rest_threshold → send rest marker (for rhythm/rests).
     // Above rest_threshold → send whatever the detector produces (even low confidence).
@@ -98,7 +90,7 @@ void loop() {
     // we only accept *fresh* locks if level is above a higher "trust" threshold.
     // Below trust but above rest: hold the previous good note (using current level).
     // This way the trace stays on the correct steady note until the volume has clearly dropped.
-    const float REST_THRESHOLD = 0.001;     // below this = rest (tune with your DEBUG levels)
+    const float REST_THRESHOLD = 0.001;     // below this = rest
     const float TRUST_FRESH_LOCK = 0.005;   // only trust a brand new YIN lock above this (prevents tail garbage)
 
     // Last good state for holding during high-volume periods

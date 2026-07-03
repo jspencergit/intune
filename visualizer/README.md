@@ -26,13 +26,17 @@ Connect a pitch detection device over serial (or use built-in simulation) and se
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Install dependencies (pyqtgraph edition for smooth scrolling)
+
+The visualizer was ported to **PyQt5 + pyqtgraph** (inspired by highly efficient real-time serial plotters such as https://github.com/iskandarputra/Real-Time-Py-Serial-Plotter) because the previous Matplotlib + FuncAnimation approach produced jerky scrolling even after multiple optimizations.
 
 ```bash
 pip install -r requirements.txt
 # or
 pip install -e .
 ```
+
+This will pull in PyQt5 + pyqtgraph (in addition to pyserial + numpy).
 
 ### 2. Run with simulation (no hardware needed)
 
@@ -52,6 +56,15 @@ List available ports:
 ```bash
 python visualizer.py --list-ports
 ```
+
+### Why pyqtgraph?
+
+- Extremely fast `setData()` updates on PlotDataItem / curves.
+- Event/timer-driven updates instead of heavy per-frame Matplotlib redraws.
+- Efficient history handling (deque + direct curve replacement).
+- Much smoother scrolling at 40–60 Hz data rates.
+
+The musical features (alto-clef staff with ledger lines, dual staff + cents view, BPM-timed "visible beats" window, color coding, rests, confidence fading, crosshair inspection when paused, rich CSV export, simulator) have been preserved.
 
 ## Command Line Options
 
@@ -131,6 +144,15 @@ pip install -e .
 # Run with simulation + debug logging
 python visualizer.py --simulate --debug
 ```
+
+If you want the old Matplotlib version (for comparison), it is no longer the default. You can revert via git or keep a copy of the previous `visualizer.py`.
+
+## Troubleshooting smoothness
+
+- Make sure you are running the pyqtgraph version (check the window title).
+- On Windows, the Qt backend usually works well. You can experiment with environment variables if needed.
+- The firmware sends at a steady ~40 Hz (including rests) — this helps the trace advance regularly.
+- Use `--simulate` first to verify the UI without serial jitter.
 
 ### Project Layout
 

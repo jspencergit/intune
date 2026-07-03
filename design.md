@@ -2,9 +2,9 @@
 
 **Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello**
 
-**Status**: Early prototype (May 2026)  
-**Current focus**: Teensy pitch detection algorithm comparison (FFT1024 vs AudioAnalyzeNoteFrequency/YIN) on clean C-major scale test signal.  
-**Last major activity**: Added parallel YIN detector for side-by-side evaluation.
+**Status**: Early prototype (June 2026)  
+**Current focus**: Debugging & mitigating octave errors on low strings (e.g. E3 reported as E4 by the Teensy YIN detector) using clean non-vibrato C major scale recordings + the PC reference tool. Simple history-based correction heuristic prototyped in Python and ported to firmware.  
+**Last major activity**: Pure YIN on device (FFT parallel path removed); added temporal octave snap in fresh-lock path + simulation harness in analyze_viola.py.
 
 ---
 
@@ -106,14 +106,15 @@ G3,8
   - Above rest threshold: send fresh YIN if available (with its native prob) or hold the last good note (to avoid gaps from detector update rate). Low-conf periods appear faded.
   - Below rest threshold: explicit `---` rest marker + level.
   - A higher "trust fresh lock" threshold prevents accepting garbage new locks on the decaying tail of a note (avoids "stuck on random note" at end).
+- **Octave error mitigation (new)**: After the standard `12*log2(f/440)+69` + round conversion, a lightweight temporal check snaps exactly one-octave jumps when they match the previous stable MIDI note (inside the fresh-lock branch). This reuses the existing `last_*` hold state and is conservative for first-position low-string work. The raw `yinFreq` is still visible in DEBUG output.
 - Constant rate output (~40 Hz) for continuous right-aligned scrolling (newest on right), so rests are visible for rhythm practice.
 - This lets you see raw detector output (wobbly/low conf = faded) on sounding notes while cleanly marking true low-volume/rest periods.
-- Full practical viola range supported in visualizer (C3–F6).
+- Full practical viola range supported in visualizer (C3–F6, with staff trimmed to first position in recent visualizer work).
 - Visualizer fades trace alpha based on reported confidence and has special rendering for `---` rests.
 
-**Recent focus:** Stabilizing real acoustic input from speaker tests, implementing volume-based (not confidence-based) rest gating, and ensuring constant-rate data for rhythm visualization.
+**Recent focus:** Stabilizing real acoustic input from speaker tests, implementing volume-based (not confidence-based) rest gating, constant-rate data for rhythm visualization, and addressing octave doubling on lower notes (E3→E4 etc.) using clean C-major scale test material + PC reference.
 
-**PlatformIO config:** Standard `teensy41` + Arduino framework.
+**PlatformIO config:** Standard `teensy41` + Arduino framework. (No extra libraries; FFT objects were previously wired in parallel but removed in favor of pure YIN + post-correction.)
 
 **PlatformIO config:** Standard `teensy41` + Arduino framework. No extra libraries declared yet.
 
@@ -133,16 +134,17 @@ Reference recordings live outside the repo (`C:\Code\reference_audio\viola\...`)
 
 ## 3. Pitch Detection — Current vs. Target
 
-| Aspect                  | Current Teensy (FFT)          | PC Reference (pyin)       | Target for Real Use                  |
+| Aspect                  | Current Teensy (YIN + snap)   | PC Reference (pyin)       | Target for Real Use                  |
 |-------------------------|-------------------------------|---------------------------|--------------------------------------|
-| Algorithm               | FFT peak + interp             | Probabilistic YIN         | ? (FFT optimized, or autocorrelation, or hybrid) |
-| Input                   | Self-generated sine           | Real viola recordings     | Contact mic / piezo on instrument    |
-| Vibrato handling        | Basic smoothing               | Good (pyin)               | Must tolerate musical vibrato        |
-| Attack / bow noise      | N/A                           | Visible in plots          | Major challenge                      |
+| Algorithm               | Audio lib YIN + temporal octave snap on exact ±12 jumps (history-based) | Probabilistic YIN (librosa) | Hybrid (YIN or custom + low-partial validation from light FFT) or improved YIN params |
+| Input                   | Real mic (INMP441 I2S) + clean C maj scale test signals | Real viola recordings (incl. C3 non-vibrato + user YouTube scales) | Contact mic / piezo on instrument    |
+| Octave errors (low strings) | Mitigated by snap (E3 etc. now prefer previous stable octave) | Correct on clean signals  | Eliminate for first-position low notes |
+| Vibrato handling        | Basic (via hold + YIN prob)   | Good (pyin)               | Must tolerate musical vibrato        |
+| Attack / bow noise      | Volume gate + fresh-lock trust threshold | Visible in plots          | Major challenge                      |
 | Latency                 | ~25 ms output interval        | Offline                   | < 30–40 ms end-to-end preferred      |
-| CPU / RAM on Teensy 4.1 | Comfortable                   | N/A                       | Must stay lightweight                |
+| CPU / RAM on Teensy 4.1 | Comfortable (light correction) | N/A                       | Must stay lightweight                |
 
-**Open question:** Will we stay with FFT + clever post-processing on Teensy, or bring a more sophisticated time-domain method (YIN variant, autocorrelation with peak tracking, etc.)?
+**Open question:** Will we stay with YIN + simple history snap, or bring back a lightweight parallel FFT (as in earlier git history) for explicit lowest-partial validation on problematic low notes? Prototype improvements in `analyze_viola.py` first.
 
 ---
 
@@ -195,15 +197,16 @@ From git history and code comments, recent focus has been:
 - Better note transition handling in the Teensy FFT tracker ("Better Transitions" in banner)
 
 **Likely next areas (to be confirmed with user):**
-- Real audio input path on Teensy (I2S mic or Audio Shield)
-- Improved pitch tracking algorithm (handle real viola better)
-- Adding amplitude / confidence / "note stability" to the data model and visualization
+- Real audio input path on Teensy (I2S mic or Audio Shield) — contact/piezo preferred for low-string fundamentals.
+- Improved pitch tracking algorithm (octave error mitigation on low strings using the clean C major scale + analyze_viola.py simulation harness; history snap implemented; hybrid FFT validation as follow-up).
+- Adding amplitude / confidence / "note stability" to the data model and visualization (raw prob already in DEBUG and serial; visualizer can surface it more).
 - Rhythm detection prototype
 - Better handling of note changes / glissandi in the visualizer
 - Export / session recording features (basic debug CSV export added May 2026)
 
 **Specific open questions to resolve:**
-- What microphone / pickup hardware are we targeting first?
+- What microphone / pickup hardware are we targeting first? (INMP441 works but low-end fundamentals can be weak → octave jumps.)
+- How aggressive should the octave snap be (current: exact ±12 from last stable)? Test on the user's scale + live first-position playing.
 - Do we want the Teensy to also detect rhythm onsets, or do rhythm detection on the host?
 - Target maximum acceptable latency for "feels real-time"?
 - Should the visualizer support multiple clefs/instruments soon, or stay viola-only for now?
