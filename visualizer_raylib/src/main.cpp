@@ -54,6 +54,8 @@ constexpr int   DEFAULT_WIDTH   = 1600;
 constexpr int   DEFAULT_HEIGHT  = 960;
 constexpr float DEFAULT_BPM     = 80.0f;
 constexpr float DEFAULT_BEATS   = 4.0f;
+constexpr float RENDER_HZ       = 60.0f;
+constexpr float RENDER_STEP_MS  = 1000.0f / RENDER_HZ;  // match display vsync
 constexpr int   POINTS_PER_SEC  = 60;
 constexpr float IN_TUNE_CENTS   = 5.0f;
 
@@ -248,7 +250,7 @@ public:
             if (dt > 0.1f) dt = 0.1f;
 
             t += dt;
-            local_ts += dt * 1000.0f;
+            local_ts += RENDER_STEP_MS;
             phase += dt * 1.6f;
 
             // Occasionally change base note or insert a rest (feels like real practice)
@@ -297,8 +299,7 @@ public:
                 if (g_incoming.size() > 4000) g_incoming.pop_front();
             }
 
-            // ~50-60 Hz output rate
-            std::this_thread::sleep_for(std::chrono::milliseconds(18));
+            std::this_thread::sleep_for(std::chrono::microseconds(16667)); // 60 Hz
         }
     }
 
@@ -590,6 +591,16 @@ static float smoothstep01(float t) {
 
 struct TraceVisPt { float x; float y; Color c; float a; };
 
+static const PitchSample* history_sample_at(const std::deque<PitchSample>& history, float query_ts) {
+    const PitchSample* best = nullptr;
+    for (const auto& s : history) {
+        if (s.teensy_ts <= 0.0f) continue;
+        if (s.teensy_ts > query_ts) break;
+        best = &s;
+    }
+    return best;
+}
+
 static void smooth_pitch_steps(std::vector<TraceVisPt>& pts) {
     if (pts.size() < 2) return;
     std::vector<TraceVisPt> out;
@@ -830,11 +841,9 @@ private:
     float staff_y_scale_ = 82.0f; // pixels per staff unit
     size_t last_trace_pts_ = 0;   // visible polyline points last frame (HUD diagnostic)
 
-    // Smooth scroll clock: advances every frame; catches up if device is ahead.
+    // Render clock — wall-time only. Never snap to latest_ts_ (that caused 40 Hz scroll jumps).
     float scroll_now_ts() const {
-        float now = display_now_;
-        if (latest_ts_ > now) now = latest_ts_;
-        return now;
+        return display_now_;
     }
 
     void start_reader_or_sim() {
@@ -959,9 +968,19 @@ private:
     void update_timing(float dt) {
         if (paused_) return;
 
-        // Advance display time for smooth creep between packets
-        display_now_ += dt * 1000.0f;
+        // Lock scroll to 60 Hz grid (eliminates 40/60 Hz beat with device stream).
+        display_now_ += RENDER_STEP_MS;
+
+        if (!config_.simulate && latest_ts_ > 0.0f) {
+            float gap = latest_ts_ - display_now_;
+            if (gap > 2.0f * RENDER_STEP_MS) {
+                display_now_ += gap * 0.15f;
+            } else if (gap < -RENDER_STEP_MS) {
+                display_now_ = latest_ts_;
+            }
+        }
         refresh_latest_ts();
+        (void)dt;
     }
 
     void update_streak_and_accuracy() {
@@ -1276,7 +1295,7 @@ private:
             }
         }
 
-        // === THE TRACE ===
+        // === THE TRACE (resampled to 60 Hz render grid — no 40/60 beat aliasing) ===
         last_trace_pts_ = 0;
         if (history_.size() >= 2) {
             const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
@@ -1284,18 +1303,17 @@ private:
 
             std::vector<TraceVisPt> vis;
             float last_y = 4.0f;
-            TraceVisPt latest_pt{};
-            bool have_latest = false;
+            const float t_start = now_ts - visible_sec * 1000.0f - RENDER_STEP_MS;
 
-            for (const auto& s : history_) {
-                if (s.teensy_ts <= 0.0f) continue;
-                float age = (now_ts - s.teensy_ts) / 1000.0f;
+            for (float t = t_start; t <= now_ts + 0.5f; t += RENDER_STEP_MS) {
+                const PitchSample* s = history_sample_at(history_, t);
+                if (!s) continue;
+
+                float age = (now_ts - t) / 1000.0f;
                 if (age < 0 || age > visible_sec + 0.7f) continue;
 
-                float bx = -age * (bpm_ / 60.0f);
-                float sx = beat_to_screen(bx);
-
-                bool rest = (s.note == "---");
+                float sx = beat_to_screen(-age * (bpm_ / 60.0f));
+                bool rest = (s->note == "---");
                 Color col;
                 float alpha;
                 float yy;
@@ -1303,24 +1321,15 @@ private:
                 if (rest) {
                     col = COL_REST;
                     alpha = 0.55f;
-                    yy = (last_y > 0.1f) ? last_y : s.y_pos;
+                    yy = (last_y > 0.1f) ? last_y : s->y_pos;
                 } else {
-                    col = get_color(s.cents);
-                    alpha = (s.confidence > 0.01f) ? std::clamp(0.35f + s.confidence * 0.65f, 0.45f, 1.0f) : 0.88f;
-                    yy = s.y_pos;
+                    col = get_color(s->cents);
+                    alpha = (s->confidence > 0.01f)
+                        ? std::clamp(0.35f + s->confidence * 0.65f, 0.45f, 1.0f) : 0.88f;
+                    yy = s->y_pos;
                     last_y = yy;
-                    latest_pt = {sx, y_to_screen(yy), col, alpha};
-                    have_latest = true;
                 }
-
                 vis.push_back({sx, y_to_screen(yy), col, alpha});
-            }
-
-            if (have_latest) {
-                float play_x = beat_to_screen(0.0f);
-                if (play_x > latest_pt.x + 1.0f) {
-                    vis.push_back({play_x, latest_pt.y, latest_pt.c, latest_pt.a});
-                }
             }
 
             smooth_pitch_steps(vis);
@@ -1410,7 +1419,6 @@ private:
         draw_font_text(g_font_ui, "0",   {cents_rect_.x + 14, mid_y - 6}, 12.0f, with_alpha(TEXT_DIM, 0.45f));
         draw_font_text(g_font_ui, "-25", {cents_rect_.x + 14, mid_y + scale_y * 25.0f - 6}, 12.0f, with_alpha(TEXT_DIM, 0.45f));
 
-        // Trace (colored like the staff trace for consistency)
         if (history_.size() >= 2) {
             const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
             const float now_ts = scroll_now_ts();
@@ -1418,23 +1426,20 @@ private:
             struct CentsVis { float x; float y; Color c; };
             std::vector<CentsVis> cvis;
             float last_cents = 0.0f;
-            for (const auto& s : history_) {
-                if (s.teensy_ts <= 0.0f) continue;
-                float age = (now_ts - s.teensy_ts) / 1000.0f;
+            const float t_start = now_ts - visible_sec * 1000.0f - RENDER_STEP_MS;
+
+            for (float t = t_start; t <= now_ts + 0.5f; t += RENDER_STEP_MS) {
+                const PitchSample* s = history_sample_at(history_, t);
+                if (!s) continue;
+
+                float age = (now_ts - t) / 1000.0f;
                 if (age < 0 || age > visible_sec + 0.7f) continue;
-                float bx = -age * (bpm_ / 60.0f);
-                float sx = beat_to_x(bx);
-                float cents_val = (s.note == "---") ? last_cents : s.cents;
-                if (s.note != "---") last_cents = s.cents;
-                float cy = mid_y - cents_val * scale_y;
-                Color col = (s.note == "---") ? COL_REST : get_color(s.cents);
-                cvis.push_back({sx, cy, col});
-            }
-            if (!cvis.empty()) {
-                float play_x = beat_to_x(0.0f);
-                if (play_x > cvis.back().x + 1.0f) {
-                    cvis.push_back({play_x, cvis.back().y, cvis.back().c});
-                }
+
+                float sx = beat_to_x(-age * (bpm_ / 60.0f));
+                float cents_val = (s->note == "---") ? last_cents : s->cents;
+                if (s->note != "---") last_cents = s->cents;
+                Color col = (s->note == "---") ? COL_REST : get_color(s->cents);
+                cvis.push_back({sx, mid_y - cents_val * scale_y, col});
             }
             if (cvis.size() >= 2) {
                 for (size_t i = 0; i + 1 < cvis.size(); ++i) {

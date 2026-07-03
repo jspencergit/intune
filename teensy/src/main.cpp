@@ -23,7 +23,7 @@
  *
  * Primary detector: AudioAnalyzeNoteFrequency (YIN-based).
  *
- * Output is constant rate (~40 Hz).
+ * Output is constant rate (60 Hz — matched to visualizer render rate).
  * Gating for "rest" (--- marker) is done purely on mic level/volume.
  * When volume is sufficient, we output whatever the YIN detector reports
  * (including periods of low confidence, which the visualizer will show faded).
@@ -52,7 +52,7 @@ void setup() {
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
-  Serial.println("=== Constant-rate output (40 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
+  Serial.println("=== Constant-rate output (60 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
   Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. ===");
   
   // NoteFrequency (YIN-based). Low threshold so we get readings even on softer signals.
@@ -61,15 +61,18 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t lastOutput = 0;
+  static uint32_t nextOutputUs = 0;
+  constexpr uint32_t OUTPUT_INTERVAL_US = 16667;  // 60 Hz (matches visualizer RENDER_HZ)
 
-  // Real I2S microphone input is now live - no synthetic tones
-
-  // Fixed-rate output (~40 Hz) — always send so the visualizer scrolls continuously
-  // like a right-aligned "oscilloscope". Essential for rhythm practice (rests are part of time).
-  // Newest data is on the right, as musicians read forward in time to the right.
-  if (millis() - lastOutput > 25) {
-    lastOutput = millis();
+  // Fixed-rate output (60 Hz) — phase-stable timing via micros(), not millis().
+  // Always send so the visualizer scrolls continuously like a right-aligned oscilloscope.
+  uint32_t nowUs = micros();
+  if (nextOutputUs == 0) nextOutputUs = nowUs;
+  if ((int32_t)(nowUs - nextOutputUs) >= (int32_t)OUTPUT_INTERVAL_US) {
+    nextOutputUs += OUTPUT_INTERVAL_US;
+    if ((int32_t)(nowUs - nextOutputUs) > (int32_t)OUTPUT_INTERVAL_US) {
+      nextOutputUs = nowUs;  // recover after long stall
+    }
 
     float level = peak1.read();
 
