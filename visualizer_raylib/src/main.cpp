@@ -54,14 +54,15 @@ constexpr int   DEFAULT_WIDTH   = 1600;
 constexpr int   DEFAULT_HEIGHT  = 960;
 constexpr float DEFAULT_BPM     = 80.0f;
 constexpr float DEFAULT_BEATS   = 4.0f;
-constexpr float RENDER_HZ       = 60.0f;
-constexpr float RENDER_STEP_MS  = 1000.0f / RENDER_HZ;  // match display vsync
-constexpr int   POINTS_PER_SEC  = 60;
+constexpr float RENDER_HZ         = 60.0f;
+constexpr float RENDER_STEP_MS    = 1000.0f / RENDER_HZ;  // display vsync
+constexpr float DEVICE_HZ         = 120.0f;
+constexpr float SAMPLE_INTERVAL_MS = 1000.0f / DEVICE_HZ;
 constexpr float IN_TUNE_CENTS   = 5.0f;
 
 struct Config {
     std::string port = "COM3";
-    int baud = 115200;
+    int baud = 230400;
     bool simulate = true;
     bool debug = false;
 };
@@ -113,6 +114,7 @@ const Color BAR_GRID_COL  = {0x5a, 0x70, 0x80, 0xff};
 constexpr float TRACE_CORE_WIDTH = 2.4f;
 constexpr int   HUD_HEIGHT       = 96;
 constexpr float STAFF_GUTTER_W   = 80.0f;  // fixed left column for clef + labels
+constexpr float CENTS_RIBBON_H   = 228.0f; // 50% taller than original 152
 
 // Simple square-wave generator for the metronome (raylib 6+ does not provide GenWaveSquare in the public API).
 static Wave GenWaveSquare(float frequency, float durationSeconds, int sampleRate)
@@ -141,7 +143,7 @@ static Wave GenWaveSquare(float frequency, float durationSeconds, int sampleRate
 // =============================================================================
 
 struct PitchSample {
-    float   teensy_ts;   // device millis or our sim time
+    float   teensy_ts;   // host stream time (ms since scroll anchor) — set on drain
     std::string note;
     float   cents;
     float   y_pos;
@@ -250,7 +252,7 @@ public:
             if (dt > 0.1f) dt = 0.1f;
 
             t += dt;
-            local_ts += RENDER_STEP_MS;
+            local_ts += SAMPLE_INTERVAL_MS;
             phase += dt * 1.6f;
 
             // Occasionally change base note or insert a rest (feels like real practice)
@@ -299,7 +301,7 @@ public:
                 if (g_incoming.size() > 4000) g_incoming.pop_front();
             }
 
-            std::this_thread::sleep_for(std::chrono::microseconds(16667)); // 60 Hz
+            std::this_thread::sleep_for(std::chrono::microseconds(8333)); // 120 Hz
         }
     }
 
@@ -591,14 +593,25 @@ static float smoothstep01(float t) {
 
 struct TraceVisPt { float x; float y; Color c; float a; };
 
-static const PitchSample* history_sample_at(const std::deque<PitchSample>& history, float query_ts) {
-    const PitchSample* best = nullptr;
-    for (const auto& s : history) {
-        if (s.teensy_ts <= 0.0f) continue;
-        if (s.teensy_ts > query_ts) break;
-        best = &s;
+static void densify_trace_x(std::vector<TraceVisPt>& pts) {
+    if (pts.size() < 2) return;
+    std::vector<TraceVisPt> out;
+    out.reserve(pts.size() * 4);
+    out.push_back(pts[0]);
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        const auto& a = pts[i];
+        const auto& b = pts[i + 1];
+        float dx = b.x - a.x;
+        if (dx > 2.0f) {
+            int steps = std::clamp((int)std::ceil(dx / 2.0f), 2, 14);
+            for (int s = 1; s < steps; ++s) {
+                float t = (float)s / (float)steps;
+                out.push_back({a.x + dx * t, a.y + (b.y - a.y) * t, b.c, a.a + (b.a - a.a) * t});
+            }
+        }
+        out.push_back(b);
     }
-    return best;
+    pts.swap(out);
 }
 
 static void smooth_pitch_steps(std::vector<TraceVisPt>& pts) {
@@ -606,13 +619,11 @@ static void smooth_pitch_steps(std::vector<TraceVisPt>& pts) {
     std::vector<TraceVisPt> out;
     out.reserve(pts.size() * 2);
     out.push_back(pts[0]);
-
     for (size_t i = 0; i + 1 < pts.size(); ++i) {
         const auto& a = pts[i];
         const auto& b = pts[i + 1];
         float dy = std::fabs(a.y - b.y);
         float dx = b.x - a.x;
-
         if (dy > 2.0f && dx > 4.0f) {
             constexpr int kSteps = 6;
             for (int s = 1; s < kSteps; ++s) {
@@ -724,7 +735,9 @@ public:
         beats_visible_ = DEFAULT_BEATS;
         bpm_ = DEFAULT_BPM;
         display_now_ = 0.0f;
-        last_wall_ = std::chrono::steady_clock::now();
+        paused_display_ms_ = 0.0f;
+        scroll_anchor_ = std::chrono::steady_clock::now();
+        last_wall_ = scroll_anchor_;
         start_reader_or_sim();
         if (!config_.simulate) {
             printf("[serial] Opening %s @ %d (close Serial Monitor / other apps first)\n",
@@ -762,6 +775,7 @@ public:
             float dt = std::chrono::duration<float>(now - last_wall_).count();
             last_wall_ = now;
 
+            frame_dt_ = std::clamp(dt, 0.001f, 0.05f);
             handle_input(dt);
             drain_incoming();
             update_timing(dt);
@@ -812,7 +826,9 @@ private:
     bool paused_ = false;
     bool quit_ = false;
     float display_now_ = 0.0f;
+    float paused_display_ms_ = 0.0f;
     float latest_ts_ = 0.0f;
+    std::chrono::steady_clock::time_point scroll_anchor_;
     std::chrono::steady_clock::time_point last_wall_;
 
     // Audio is initialized lazily after the first frame so the window becomes responsive immediately.
@@ -821,7 +837,6 @@ private:
 
     // Gamification
     float current_streak_s_ = 0.0f;
-    bool  clock_initialized_ = false;
     float visible_accuracy_ = 0.0f; // 0..100
     // Metronome
     bool  metro_on_ = false;
@@ -839,9 +854,45 @@ private:
     Rectangle staff_rect_{};
     Rectangle cents_rect_{};
     float staff_y_scale_ = 82.0f; // pixels per staff unit
-    size_t last_trace_pts_ = 0;   // visible polyline points last frame (HUD diagnostic)
+    size_t last_trace_pts_ = 0;
+    float frame_dt_ = 1.0f / 60.0f;
+    float bpm_hold_timer_ = 0.0f;
+    float trace_screen_playhead_y_ = 0.0f;
+    float trace_screen_target_y_ = 0.0f;
 
-    // Render clock — wall-time only. Never snap to latest_ts_ (that caused 40 Hz scroll jumps).
+    float scroll_subpixel(float usable_w) const {
+        const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
+        if (visible_sec < 0.01f) return 0.0f;
+        const float px_per_ms = usable_w / (visible_sec * 1000.0f);
+        const float scroll_px = scroll_now_ts() * px_per_ms;
+        return scroll_px - std::floor(scroll_px);
+    }
+
+    void update_playhead_smooth(float dt) {
+        float pitch_target = 4.0f;
+        bool found = false;
+        for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
+            if (it->note == "---") break;
+            pitch_target = it->y_pos;
+            found = true;
+            break;
+        }
+        if (found) {
+            trace_screen_target_y_ = staff_pitch_to_screen_y(pitch_target, staff_rect_.y, staff_y_scale_);
+            if (trace_screen_playhead_y_ < 1.0f) {
+                trace_screen_playhead_y_ = trace_screen_target_y_;
+            }
+        }
+        const float smooth_k = std::min(1.0f, dt * 22.0f);
+        trace_screen_playhead_y_ += (trace_screen_target_y_ - trace_screen_playhead_y_) * smooth_k;
+    }
+
+    // Host-master scroll clock — PC steady_clock drives all motion; device supplies pitch only.
+    float host_now_ms() const {
+        using ms = std::chrono::duration<float, std::milli>;
+        return ms(std::chrono::steady_clock::now() - scroll_anchor_).count();
+    }
+
     float scroll_now_ts() const {
         return display_now_;
     }
@@ -881,29 +932,17 @@ private:
         CloseWindow();
     }
 
-    // Reference "now" for age/scroll math. Teensy millis() is absolute since boot;
-    // display_now_ starts near 0 — must use max() like the Python visualizer or every
-    // hardware sample has negative age and is filtered out of the trace.
-    float effective_now_ts() const {
-        return std::max(display_now_, latest_ts_);
-    }
-
-    void refresh_latest_ts() {
-        for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
-            if (it->teensy_ts > latest_ts_) {
-                latest_ts_ = it->teensy_ts;
-            }
-        }
-    }
-
     void handle_input(float /*dt*/) {
         if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_P)) {
-            paused_ = !paused_;
             if (!paused_) {
+                paused_display_ms_ = display_now_;
+                paused_ = true;
+            } else {
+                scroll_anchor_ = std::chrono::steady_clock::now() -
+                    std::chrono::milliseconds((long long)paused_display_ms_);
+                display_now_ = paused_display_ms_;
                 last_wall_ = std::chrono::steady_clock::now();
-                if (latest_ts_ > 0.0f) {
-                    display_now_ = std::max(display_now_, latest_ts_);
-                }
+                paused_ = false;
             }
         }
         if (IsKeyPressed(KEY_C)) {
@@ -913,11 +952,30 @@ private:
             metro_on_ = !metro_on_;
         }
 
-        // BPM
-        if (IsKeyPressed(KEY_LEFT_BRACKET))  bpm_ = std::max(36.0f, bpm_ - 1.0f);
-        if (IsKeyPressed(KEY_RIGHT_BRACKET)) bpm_ = std::min(200.0f, bpm_ + 1.0f);
-        if (IsKeyDown(KEY_LEFT_BRACKET) && GetFrameTime() > 0.12f) bpm_ = std::max(36.0f, bpm_ - 0.6f);
-        if (IsKeyDown(KEY_RIGHT_BRACKET) && GetFrameTime() > 0.12f) bpm_ = std::min(200.0f, bpm_ + 0.6f);
+        // BPM — tap once; hold key for auto-repeat
+        if (IsKeyPressed(KEY_LEFT_BRACKET)) {
+            bpm_ = std::max(36.0f, bpm_ - 1.0f);
+            bpm_hold_timer_ = 0.4f;
+        } else if (IsKeyDown(KEY_LEFT_BRACKET)) {
+            if (bpm_hold_timer_ > 0.0f) {
+                bpm_hold_timer_ -= frame_dt_;
+            } else {
+                bpm_ = std::max(36.0f, bpm_ - 0.8f);
+                bpm_hold_timer_ = 0.06f;
+            }
+        } else if (IsKeyPressed(KEY_RIGHT_BRACKET)) {
+            bpm_ = std::min(200.0f, bpm_ + 1.0f);
+            bpm_hold_timer_ = 0.4f;
+        } else if (IsKeyDown(KEY_RIGHT_BRACKET)) {
+            if (bpm_hold_timer_ > 0.0f) {
+                bpm_hold_timer_ -= frame_dt_;
+            } else {
+                bpm_ = std::min(200.0f, bpm_ + 0.8f);
+                bpm_hold_timer_ = 0.06f;
+            }
+        } else if (IsKeyReleased(KEY_LEFT_BRACKET) || IsKeyReleased(KEY_RIGHT_BRACKET)) {
+            bpm_hold_timer_ = 0.0f;
+        }
 
         // Visible window
         if (IsKeyPressed(KEY_SEMICOLON)) beats_visible_ = std::max(1.5f, beats_visible_ - 0.25f);
@@ -947,40 +1005,28 @@ private:
         if (paused_) return;
 
         std::lock_guard<std::mutex> lk(g_incoming_mtx);
+        const size_t batch = g_incoming.size();
+        if (batch == 0) return;
+
+        const float host_now = host_now_ms();
+        size_t idx = 0;
         while (!g_incoming.empty()) {
-            const auto& s = g_incoming.front();
+            PitchSample s = g_incoming.front();
+            // Spread batched serial lines across SAMPLE_INTERVAL_MS so they don't stack on one X.
+            s.teensy_ts = host_now - (float)(batch - 1 - idx) * SAMPLE_INTERVAL_MS;
             history_.push_back(s);
             if (s.teensy_ts > latest_ts_) {
                 latest_ts_ = s.teensy_ts;
             }
             g_incoming.pop_front();
-            if (history_.size() > 2800) history_.pop_front();
-        }
-
-        // One-time clock sync on first HW packet (Teensy millis is absolute since boot).
-        // Do NOT snap every batch — that causes scroll jitter.
-        if (!config_.simulate && latest_ts_ > 0.0f && !clock_initialized_) {
-            display_now_ = latest_ts_;
-            clock_initialized_ = true;
+            if (history_.size() > 5600) history_.pop_front();
+            ++idx;
         }
     }
 
-    void update_timing(float dt) {
+    void update_timing(float /*dt*/) {
         if (paused_) return;
-
-        // Lock scroll to 60 Hz grid (eliminates 40/60 Hz beat with device stream).
-        display_now_ += RENDER_STEP_MS;
-
-        if (!config_.simulate && latest_ts_ > 0.0f) {
-            float gap = latest_ts_ - display_now_;
-            if (gap > 2.0f * RENDER_STEP_MS) {
-                display_now_ += gap * 0.15f;
-            } else if (gap < -RENDER_STEP_MS) {
-                display_now_ = latest_ts_;
-            }
-        }
-        refresh_latest_ts();
-        (void)dt;
+        display_now_ = host_now_ms();
     }
 
     void update_streak_and_accuracy() {
@@ -1078,10 +1124,14 @@ private:
             g_incoming.clear();
         }
         history_.clear();
+        scroll_anchor_ = std::chrono::steady_clock::now();
         display_now_ = 0.0f;
+        paused_display_ms_ = 0.0f;
         latest_ts_ = 0.0f;
         current_streak_s_ = 0.0f;
         show_crosshair_ = false;
+        trace_screen_playhead_y_ = 0.0f;
+        trace_screen_target_y_ = 0.0f;
     }
 
     void pick_crosshair_sample(float screen_x) {
@@ -1295,25 +1345,35 @@ private:
             }
         }
 
-        // === THE TRACE (resampled to 60 Hz render grid — no 40/60 beat aliasing) ===
+        const float grid_top = staff_rect_.y + 54.0f;
+        const float grid_bot = staff_rect_.y + staff_rect_.height - 10.0f;
+        const float sub_px = scroll_subpixel(usable_width);
+
+        update_playhead_smooth(frame_dt_);
+
+        const float now_screen_x = beat_to_screen(0.0f) - sub_px;
+        const float dot_y = (trace_screen_playhead_y_ > 1.0f)
+            ? trace_screen_playhead_y_
+            : y_to_screen(4.0f);
+
+        // === THE TRACE (polyline from history — same path as cents ribbon) ===
         last_trace_pts_ = 0;
-        if (history_.size() >= 2) {
+        if (!history_.empty()) {
             const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
             const float now_ts = scroll_now_ts();
+            const float oldest_ts = now_ts - visible_sec * 1000.0f - 50.0f;
 
             std::vector<TraceVisPt> vis;
             float last_y = 4.0f;
-            const float t_start = now_ts - visible_sec * 1000.0f - RENDER_STEP_MS;
 
-            for (float t = t_start; t <= now_ts + 0.5f; t += RENDER_STEP_MS) {
-                const PitchSample* s = history_sample_at(history_, t);
-                if (!s) continue;
+            for (const auto& sample : history_) {
+                if (sample.teensy_ts <= 0.0f || sample.teensy_ts < oldest_ts) continue;
 
-                float age = (now_ts - t) / 1000.0f;
+                float age = (now_ts - sample.teensy_ts) / 1000.0f;
                 if (age < 0 || age > visible_sec + 0.7f) continue;
 
-                float sx = beat_to_screen(-age * (bpm_ / 60.0f));
-                bool rest = (s->note == "---");
+                float sx = beat_to_screen(-age * (bpm_ / 60.0f)) - sub_px;
+                bool rest = (sample.note == "---");
                 Color col;
                 float alpha;
                 float yy;
@@ -1321,17 +1381,23 @@ private:
                 if (rest) {
                     col = COL_REST;
                     alpha = 0.55f;
-                    yy = (last_y > 0.1f) ? last_y : s->y_pos;
+                    yy = (last_y > 0.1f) ? last_y : sample.y_pos;
                 } else {
-                    col = get_color(s->cents);
-                    alpha = (s->confidence > 0.01f)
-                        ? std::clamp(0.35f + s->confidence * 0.65f, 0.45f, 1.0f) : 0.88f;
-                    yy = s->y_pos;
+                    col = get_color(sample.cents);
+                    alpha = (sample.confidence > 0.01f)
+                        ? std::clamp(0.35f + sample.confidence * 0.65f, 0.45f, 1.0f) : 0.88f;
+                    yy = sample.y_pos;
                     last_y = yy;
                 }
                 vis.push_back({sx, y_to_screen(yy), col, alpha});
             }
 
+            // Hold last pitch forward to playhead so the right edge scrolls continuously.
+            if (!vis.empty() && now_screen_x > vis.back().x + 0.5f) {
+                vis.push_back({now_screen_x, dot_y, vis.back().c, vis.back().a});
+            }
+
+            densify_trace_x(vis);
             smooth_pitch_steps(vis);
             last_trace_pts_ = vis.size();
 
@@ -1346,20 +1412,13 @@ private:
             }
         }
 
-        // Playhead — gold cursor line
-        float now_screen_x = beat_to_screen(0.0f);
-        DrawLineEx({now_screen_x, staff_rect_.y + 54}, {now_screen_x, staff_rect_.y + staff_rect_.height - 10},
-                   2.0f, NOW_LINE);
+        // Playhead
+        DrawLineEx({now_screen_x, grid_top}, {now_screen_x, grid_bot}, 2.0f, NOW_LINE);
 
         if (!history_.empty()) {
-            float target_y = 4.0f;
-            for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
-                if (it->note != "---") { target_y = it->y_pos; break; }
-            }
-            float ty = y_to_screen(target_y);
-            DrawCircleV({now_screen_x, ty}, 7.0f, with_alpha(NOW_LINE, 0.12f));
-            DrawCircleV({now_screen_x, ty}, 3.8f, with_alpha(NOW_LINE, 0.45f));
-            DrawCircleV({now_screen_x, ty}, 1.8f, TEXT_BRIGHT);
+            DrawCircleV({now_screen_x, dot_y}, 7.0f, with_alpha(NOW_LINE, 0.12f));
+            DrawCircleV({now_screen_x, dot_y}, 3.8f, with_alpha(NOW_LINE, 0.45f));
+            DrawCircleV({now_screen_x, dot_y}, 1.8f, TEXT_BRIGHT);
         }
 
         // Crosshair + tooltip (paused inspection)
@@ -1387,7 +1446,7 @@ private:
 
     void draw_cents_ribbon() {
         int sw = GetScreenWidth();
-        cents_rect_ = {36.0f, staff_rect_.y + staff_rect_.height + 12.0f, (float)sw - 72.0f, 152.0f};
+        cents_rect_ = {36.0f, staff_rect_.y + staff_rect_.height + 12.0f, (float)sw - 72.0f, CENTS_RIBBON_H};
 
         draw_panel_frame(cents_rect_, with_alpha(STAFF_SURFACE, 0.95f), PANEL_BORDER, 8.0f);
 
@@ -1414,32 +1473,60 @@ private:
         DrawLineEx({trace_x0, mid_y - off}, {trace_x1, mid_y - off}, 0.8f, with_alpha(COL_IN_TUNE, 0.22f));
         DrawLineEx({trace_x0, mid_y + off}, {trace_x1, mid_y + off}, 0.8f, with_alpha(COL_IN_TUNE, 0.22f));
 
-        draw_label_caps("CENTS DEVIATION", (int)(cents_rect_.x + 14), (int)(cents_rect_.y + 10), 11, with_alpha(TEXT_DIM, 0.65f));
-        draw_font_text(g_font_ui, "+25", {cents_rect_.x + 14, mid_y - scale_y * 25.0f - 6}, 12.0f, with_alpha(TEXT_DIM, 0.45f));
-        draw_font_text(g_font_ui, "0",   {cents_rect_.x + 14, mid_y - 6}, 12.0f, with_alpha(TEXT_DIM, 0.45f));
-        draw_font_text(g_font_ui, "-25", {cents_rect_.x + 14, mid_y + scale_y * 25.0f - 6}, 12.0f, with_alpha(TEXT_DIM, 0.45f));
+        draw_label_caps("CENTS DEVIATION", (int)(cents_rect_.x + 14), (int)(cents_rect_.y + 10), 33, with_alpha(TEXT_DIM, 0.65f));
+        draw_font_text(g_font_ui, "+25", {cents_rect_.x + 14, mid_y - scale_y * 25.0f - 14}, 36.0f, with_alpha(TEXT_DIM, 0.55f));
+        draw_font_text(g_font_ui, "0",   {cents_rect_.x + 14, mid_y - 14}, 36.0f, with_alpha(TEXT_DIM, 0.55f));
+        draw_font_text(g_font_ui, "-25", {cents_rect_.x + 14, mid_y + scale_y * 25.0f - 14}, 36.0f, with_alpha(TEXT_DIM, 0.55f));
 
-        if (history_.size() >= 2) {
+        const float sub_px = scroll_subpixel(usable);
+        const float nx = beat_to_x(0.0f) - sub_px;
+
+        if (!history_.empty()) {
             const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
             const float now_ts = scroll_now_ts();
+            const float oldest_ts = now_ts - visible_sec * 1000.0f - 50.0f;
 
             struct CentsVis { float x; float y; Color c; };
             std::vector<CentsVis> cvis;
             float last_cents = 0.0f;
-            const float t_start = now_ts - visible_sec * 1000.0f - RENDER_STEP_MS;
 
-            for (float t = t_start; t <= now_ts + 0.5f; t += RENDER_STEP_MS) {
-                const PitchSample* s = history_sample_at(history_, t);
-                if (!s) continue;
+            for (const auto& sample : history_) {
+                if (sample.teensy_ts <= 0.0f || sample.teensy_ts < oldest_ts) continue;
 
-                float age = (now_ts - t) / 1000.0f;
+                float age = (now_ts - sample.teensy_ts) / 1000.0f;
                 if (age < 0 || age > visible_sec + 0.7f) continue;
 
-                float sx = beat_to_x(-age * (bpm_ / 60.0f));
-                float cents_val = (s->note == "---") ? last_cents : s->cents;
-                if (s->note != "---") last_cents = s->cents;
-                Color col = (s->note == "---") ? COL_REST : get_color(s->cents);
+                float sx = beat_to_x(-age * (bpm_ / 60.0f)) - sub_px;
+                float cents_val = (sample.note == "---") ? last_cents : sample.cents;
+                if (sample.note != "---") last_cents = sample.cents;
+                Color col = (sample.note == "---") ? COL_REST : get_color(sample.cents);
                 cvis.push_back({sx, mid_y - cents_val * scale_y, col});
+            }
+
+            if (!cvis.empty() && nx > cvis.back().x + 0.5f) {
+                cvis.push_back({nx, cvis.back().y, cvis.back().c});
+            }
+
+            if (cvis.size() >= 2) {
+                std::vector<CentsVis> dense;
+                dense.reserve(cvis.size() * 3);
+                dense.push_back(cvis[0]);
+                for (size_t i = 0; i + 1 < cvis.size(); ++i) {
+                    float dx = cvis[i + 1].x - cvis[i].x;
+                    if (dx > 2.0f) {
+                        int steps = std::clamp((int)std::ceil(dx / 2.0f), 2, 14);
+                        for (int s = 1; s < steps; ++s) {
+                            float t = (float)s / (float)steps;
+                            dense.push_back({
+                                cvis[i].x + dx * t,
+                                cvis[i].y + (cvis[i + 1].y - cvis[i].y) * t,
+                                cvis[i + 1].c
+                            });
+                        }
+                    }
+                    dense.push_back(cvis[i + 1]);
+                }
+                cvis.swap(dense);
             }
             if (cvis.size() >= 2) {
                 for (size_t i = 0; i + 1 < cvis.size(); ++i) {
@@ -1451,7 +1538,6 @@ private:
             }
         }
 
-        float nx = beat_to_x(0.0f);
         DrawLineEx({nx, cents_rect_.y + 28}, {nx, cents_rect_.y + cents_rect_.height - 10}, 1.6f, NOW_LINE);
     }
 
@@ -1503,8 +1589,8 @@ private:
 static void print_usage() {
     std::printf("Intune Raylib Visualizer\n");
     std::printf("  --simulate            Run with built-in musical simulator (default)\n");
-    std::printf("  --port COM3           Use real serial port (115200 baud default)\n");
-    std::printf("  --baud 115200\n");
+    std::printf("  --port COM3           Use real serial port (230400 baud default)\n");
+    std::printf("  --baud 230400\n");
     std::printf("  --debug               Verbose console\n");
 }
 

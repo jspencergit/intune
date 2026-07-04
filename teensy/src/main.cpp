@@ -23,7 +23,7 @@
  *
  * Primary detector: AudioAnalyzeNoteFrequency (YIN-based).
  *
- * Output is constant rate (60 Hz — matched to visualizer render rate).
+ * Output is constant rate (120 Hz — matched to visualizer DEVICE_HZ).
  * Gating for "rest" (--- marker) is done purely on mic level/volume.
  * When volume is sufficient, we output whatever the YIN detector reports
  * (including periods of low confidence, which the visualizer will show faded).
@@ -46,13 +46,13 @@ AudioConnection patchCord2(i2s1, 0, peak1, 0);
 const char* noteToName(int midi);
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(230400);
   delay(1500);
   AudioMemory(80);   // For I2S mic + NoteFrequency + Peak
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
   Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
-  Serial.println("=== Constant-rate output (60 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
+  Serial.println("=== Constant-rate output (120 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
   Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. ===");
   
   // NoteFrequency (YIN-based). Low threshold so we get readings even on softer signals.
@@ -62,9 +62,9 @@ void setup() {
 
 void loop() {
   static uint32_t nextOutputUs = 0;
-  constexpr uint32_t OUTPUT_INTERVAL_US = 16667;  // 60 Hz (matches visualizer RENDER_HZ)
+  constexpr uint32_t OUTPUT_INTERVAL_US = 8333;  // 120 Hz (matches visualizer DEVICE_HZ)
 
-  // Fixed-rate output (60 Hz) — phase-stable timing via micros(), not millis().
+  // Fixed-rate output (120 Hz) — phase-stable timing via micros(), not millis().
   // Always send so the visualizer scrolls continuously like a right-aligned oscilloscope.
   uint32_t nowUs = micros();
   if (nextOutputUs == 0) nextOutputUs = nowUs;
@@ -117,18 +117,18 @@ void loop() {
         strncpy(last_note, nm, sizeof(last_note)-1);
         last_note[sizeof(last_note)-1] = '\0';
 
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), last_note, last_cents, last_prob, level);
+        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", nextOutputUs / 1000, last_note, last_cents, last_prob, level);
       } else if (last_freq > 0) {
         // Volume is still high enough to be "sounding", but either no fresh YIN this tick or level too low for a new lock:
         // hold the last good note so the trace stays steady on the correct pitch.
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", millis(), last_note, last_cents, last_prob, level);
+        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", nextOutputUs / 1000, last_note, last_cents, last_prob, level);
       } else {
         // High volume but never locked yet
-        Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
+        Serial.printf("%lu,---,0,0.00,%.3f\n", nextOutputUs / 1000, level);
       }
     } else {
       // Below rest threshold → explicit rest (and keep last_good so it can resume quickly if volume returns)
-      Serial.printf("%lu,---,0,0.00,%.3f\n", millis(), level);
+      Serial.printf("%lu,---,0,0.00,%.3f\n", nextOutputUs / 1000, level);
     }
   }
 }
