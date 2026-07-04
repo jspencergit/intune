@@ -1,47 +1,131 @@
 # Intune
 
-## Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello
+Real-time **intonation and rhythm** practice for **viola**, **violin**, and **cello**. Play a note, see your pitch on a scrolling musical staff, and get immediate color-coded feedback on how in tune you are.
 
-Intune is a practice tool that gives string players immediate visual feedback on both pitch (intonation) and rhythm while they play.
+**Download (Windows):** [analogintuition.com/intune](https://analogintuition.com/intune/)
 
-## Features (Current)
+## What it does
 
-- Real-time pitch detection on Teensy 4.1
-- Beautiful alto-clef visualizer with BPM control
-- Color-coded feedback (green = in tune, red = sharp, blue = flat)
-- Scroll speed synced to musical tempo
+Intune combines a small **Teensy 4.1 pitch sensor** (optional) with a **PC visualizer** that shows:
 
-## Folder Structure
+- Pitch trace on the correct clef and staff (alto / bass / treble)
+- **Cents deviation** ribbon — how many cents sharp or flat
+- **BPM-synced scrolling** — the trace moves at your practice tempo
+- **Pause and inspect** — freeze and hover the mouse to review pitch and cents at any moment
+- **In-tune streak** and **accuracy** stats
+- Optional **metronome** click
 
-- `teensy/` — Teensy 4.1 firmware (PlatformIO)
-- `visualizer/` — Python real-time visualizer (PyQt5 + pyqtgraph)
-- `visualizer_raylib/` — **New C++ raylib visualizer** (fresh aesthetic, smooth GPU rendering, light gamification, metronome) — experimental new path for a more musical "I want to stare at this" experience. See its own README.
+Green = in tune · Red = sharp · Blue = flat
 
-## How to Run the Visualizer
+## Architecture
 
-**Python version (stable, practical):**
+```
+Teensy 4.1 + I²S mic  ──serial CSV @ 230400──►  PC visualizer (intune_viz.exe)
+                                                      │
+                                                      ├─ --simulate  (no hardware)
+                                                      └─ --port COM3   (live pitch)
+```
+
+Serial line format: `timestamp,Note,cents,confidence,level`  
+Example: `12345,F#4,+6.2,0.91,0.42` · Rests: `---`
+
+## Download & install (Windows)
+
+Pre-built ZIP (no installer required):
+
+1. Go to **[analogintuition.com/intune](https://analogintuition.com/intune/)**
+2. Download **Intune Visualizer** ZIP
+3. Extract anywhere — keep `intune_viz.exe`, `raylib.dll`, and `glfw3.dll` together
+4. Run `intune_viz.exe` or `intune_viz.exe --simulate`
+
+**Requirements:** Windows 10/11 64-bit, OpenGL GPU, [VC++ Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+
+### Build & package from source
+
+```powershell
+cd visualizer_raylib
+.\build.ps1                    # compile
+.\package.ps1 -CopyToWebsite   # ZIP + copy to analogintuition.com/intune/downloads/
+```
+
+Optional Inno Setup installer: compile `visualizer_raylib/installer/intune-viz.iss` after packaging.
+
+## Run the visualizer
+
+```powershell
+cd visualizer_raylib\build\Release
+
+# Simulator (no Teensy)
+.\intune_viz.exe --simulate
+
+# Live hardware (default 230400 baud)
+.\intune_viz.exe --port COM3
+
+# Debug serial
+.\intune_viz.exe --port COM3 --debug
+```
+
+### Controls
+
+| Key | Action |
+|-----|--------|
+| **Space** | Pause / resume |
+| **Mouse** (paused) | Hover trace to inspect pitch + cents |
+| **[** **]** | BPM down / up |
+| **I** | Cycle instrument (Viola → Cello → Violin) |
+| **T** | Cycle grey theme |
+| **-** **=** | In-tune threshold (¢) |
+| **;** **'** | Visible beats window |
+| **M** | Metronome |
+| **C** | Clear history |
+| **Q** / **Esc** | Quit |
+
+## Folder structure
+
+| Path | Description |
+|------|-------------|
+| `teensy/` | Teensy 4.1 firmware (PlatformIO) — YIN pitch, 120 Hz output |
+| `visualizer_raylib/` | **Primary visualizer** — C++ / raylib, GPU-accelerated |
+| `visualizer/` | Legacy Python visualizer (PyQt5 + pyqtgraph) |
+| `test_audio/` | Synthetic test scales (gitignored) — see `visualizer/generate_test_scale.py` |
+| `design.md` | Architecture and algorithm notes |
+
+## Instruments & scales
+
+Press **I** to switch:
+
+| Instrument | Clef | Default range |
+|------------|------|----------------|
+| Viola | Alto | C3 – E5 |
+| Cello | Bass | C2 – C4 |
+| Violin | Treble | C4 – C6 |
+
+Sharps and flats (e.g. C♯) render **between** natural notes on the staff. Test audio with accidentals: `visualizer/generate_test_scale.py --scale e-major --tone viola`.
+
+## Teensy firmware
+
+```bash
+cd teensy
+pio run -t upload
+```
+
+Reflash after firmware changes. If the visualizer cannot connect, close Serial Monitor and other apps using the COM port.
+
+## Python visualizer (alternative)
+
 ```bash
 cd visualizer
 pip install -r requirements.txt
-python visualizer.py --simulate     # or --port COM3 with hardware
+python visualizer.py --simulate
+# python visualizer.py --port COM3
 ```
 
-**New C++/Raylib version (beautiful new path — vibrant colors, smooth scrolling, musical staff a player will like, light gamification + optional metronome click track):**
-```powershell
-cd visualizer_raylib
-# See visualizer_raylib/README.md for build (vcpkg + CMake or MSYS2 recommended)
-# Then:
-.\build\Release\intune_viz.exe --simulate
-```
+## Future ideas
 
-The Raylib edition keeps full compatibility with the existing Teensy serial output while exploring a completely different visual and interaction language (C++ native, hand-crafted rendering, particles, pulsing beat grid, streak/accuracy HUD, glowing traces). Perfect for "does a different tech stack give us something special?" experimentation.
-
-## Future Plans
-
-- Daisy Seed version with real contact mic input
-- SD card logging + AI analysis of practice sessions
-- Wireless BLE version for iPad
+- Daisy Seed + contact mic variant
+- SD card session logging
+- Wireless / tablet client
 
 ## License
 
-MIT
+MIT — see [GitHub](https://github.com/jspencergit/intune).

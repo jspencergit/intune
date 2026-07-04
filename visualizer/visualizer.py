@@ -143,13 +143,21 @@ def pitch_to_y(note_str: str) -> float:
         return 0.8
     try:
         note = note_str[0].upper()
-        octave_str = ''.join(c for c in note_str[1:] if c.isdigit())
+        accidental = 0
+        tail = note_str[1:]
+        if tail.startswith("#"):
+            accidental = 1
+            tail = tail[1:]
+        elif tail.startswith(("b", "B")) and not tail[0].isdigit():
+            accidental = -1
+            tail = tail[1:]
+        octave_str = ''.join(c for c in tail if c.isdigit())
         if not octave_str:
             octave_str = "3"
         octave = int(octave_str)
         base = {"C": 0, "D": 1, "E": 2, "F": 3, "G": 4, "A": 5, "B": 6}
         steps = base.get(note, 3) + (octave - 3) * 7
-        return 1.2 + steps * 0.4
+        return 1.2 + steps * 0.4 + accidental * 0.2
     except Exception:
         return 4.0
 

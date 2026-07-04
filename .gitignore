@@ -32,6 +32,7 @@ visualizer/plots/
 
 # Raylib / CMake C++ visualizer (build artifacts)
 visualizer_raylib/build/
+visualizer_raylib/dist/
 visualizer_raylib/*.exe
 visualizer_raylib/*.pdb
 

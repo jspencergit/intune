@@ -13,9 +13,12 @@
 //   [ ]            BPM down / up
 //   ; '            Visible beats narrower / wider
 //   M              Toggle metronome click
+//   T              Cycle color theme preset
+//   I              Cycle instrument (Viola / Cello / Violin)
+//   - =            In-tune threshold down / up (¢)
 //   C              Clear
 //   Q / Esc        Quit
-//   Mouse (paused) Inspect values
+//   Mouse (paused) Hover trace to inspect pitch + cents
 //
 // Compile-time note: Raylib 4.5+ or 5.x preferred.
 
@@ -58,7 +61,7 @@ constexpr float RENDER_HZ         = 60.0f;
 constexpr float RENDER_STEP_MS    = 1000.0f / RENDER_HZ;  // display vsync
 constexpr float DEVICE_HZ         = 120.0f;
 constexpr float SAMPLE_INTERVAL_MS = 1000.0f / DEVICE_HZ;
-constexpr float IN_TUNE_CENTS   = 5.0f;
+constexpr float GOOD_ZONE_CENTS   = 10.0f;  // visual guide on cents ribbon
 
 struct Config {
     std::string port = "COM3";
@@ -71,49 +74,165 @@ struct Config {
 constexpr float Y_REST     = 0.8f;
 constexpr float Y_C3       = 1.2f;
 constexpr float Y_STEP     = 0.4f;   // 0.4 per semitone step in our normalized space
-// Pitch-space range for first-position viola (used to flip Y: low notes at bottom of screen)
-constexpr float STAFF_PITCH_MIN = 1.2f;   // C3
-constexpr float STAFF_PITCH_MAX = 7.6f;   // E5
 
-// Full practical first-position range labels
-const std::vector<std::pair<std::string, float>> NOTE_LABELS = {
-    {"C3", 1.2f}, {"D3", 1.6f}, {"E3", 2.0f}, {"F3", 2.4f}, {"G3", 2.8f},
-    {"A3", 3.2f}, {"B3", 3.6f}, {"C4", 4.0f}, {"D4", 4.4f}, {"E4", 4.8f},
-    {"F4", 5.2f}, {"G4", 5.6f}, {"A4", 6.0f}, {"B4", 6.4f}, {"C5", 6.8f},
-    {"D5", 7.2f}, {"E5", 7.6f},
+enum class ClefKind { Alto, Bass, Treble };
+
+struct InstrumentProfile {
+    const char* name;
+    float pitch_min;   // lowest labeled note (C-major range start)
+    float pitch_max;   // highest labeled note
+    std::vector<float> staff_main;
+    ClefKind clef;
+    float clef_anchor;   // pitch_y where clef is centered
 };
 
-const std::vector<float> STAFF_MAIN = {2.8f, 3.6f, 4.4f, 5.2f, 6.0f};
-const std::vector<float> STAFF_LEDGER = {
-    1.2f, 1.6f, 2.4f, 3.2f, 4.0f, 4.8f, 5.6f, 6.4f, 7.2f
+// C-major practice ranges: viola C3–E5, cello C2–C4, violin C4–C6
+static const InstrumentProfile INSTRUMENTS[] = {
+    { "Viola", 1.2f, 7.6f, {2.4f, 3.2f, 4.0f, 4.8f, 5.6f}, ClefKind::Alto,   4.0f },
+    { "Cello", -1.6f, 4.0f, {0.0f, 0.4f, 1.6f, 2.4f, 3.2f}, ClefKind::Bass,   2.4f },
+    { "Violin", 4.0f, 8.4f, {4.8f, 5.6f, 6.4f, 7.2f, 8.0f}, ClefKind::Treble, 5.6f },
 };
 
-// Keysight-style oscilloscope palette — dark graticule, high-contrast traces
-const Color BG            = {0x0a, 0x0c, 0x0e, 0xff};
-const Color HEADER_TOP    = {0x14, 0x18, 0x1c, 0xff};
-const Color HEADER_BOT    = {0x1e, 0x24, 0x2a, 0xff};
-const Color PANEL_BG      = {0x12, 0x16, 0x1a, 0xf0};
-const Color PANEL_BORDER  = {0x3a, 0x48, 0x54, 0xff};
-const Color STAFF_SURFACE = {0x0e, 0x12, 0x16, 0xff};
-const Color STAFF_LINE    = {0x3a, 0x4e, 0x5c, 0xbb};
-const Color LEDGER_LINE   = {0x2a, 0x38, 0x44, 0x88};
-const Color LABEL_COLOR   = {0x8a, 0x9a, 0xa8, 0xff};
-const Color NOW_LINE      = {0xe8, 0xec, 0xf0, 0xdd}; // bright scope cursor
-const Color TEXT_BRIGHT   = {0xe8, 0xec, 0xf0, 0xff};
-const Color TEXT_DIM      = {0x7a, 0x8a, 0x98, 0xff};
-const Color ACCENT_BLUE   = {0x4a, 0x90, 0xc8, 0xff};
+static int g_instrument_idx = 0;
+static float g_staff_pitch_min = 1.2f;
+static float g_staff_pitch_max = 7.6f;
+static std::vector<std::pair<std::string, float>> g_note_labels;
+static std::vector<float> g_staff_main;
+static std::vector<float> g_staff_ledger;
+static const InstrumentProfile* g_inst = &INSTRUMENTS[0];
 
-// Trace channels (Keysight ch1 yellow, ch2 cyan, warm red for sharp)
-const Color COL_IN_TUNE   = {0x3d, 0xf0, 0x7a, 0xff}; // phosphor green
-const Color COL_SHARP     = {0xff, 0x55, 0x44, 0xff}; // warm red
-const Color COL_FLAT      = {0x00, 0xcc, 0xee, 0xff}; // cyan / ch2
-const Color COL_REST      = {0x3a, 0x48, 0x54, 0x55};
-const Color BEAT_GRID_COL = {0x3a, 0x4c, 0x58, 0xff};
-const Color BAR_GRID_COL  = {0x5a, 0x70, 0x80, 0xff};
+static std::string pitch_y_to_note(float y) {
+    int total = (int)std::lround((y - 1.2f) / Y_STEP);
+    int octave = 3 + total / 7;
+    int step = total % 7;
+    if (step < 0) { step += 7; --octave; }
+    static const char* names[] = {"C", "D", "E", "F", "G", "A", "B"};
+    return std::string(names[step]) + std::to_string(octave);
+}
+
+static std::vector<float> build_ledger_lines(float pmin, float pmax, const std::vector<float>& main) {
+    std::vector<float> ledgers;
+    for (float y = pmin; y <= pmax + 0.001f; y += Y_STEP) {
+        bool on_staff = false;
+        for (float m : main) {
+            if (std::fabs(y - m) < 0.01f) { on_staff = true; break; }
+        }
+        if (!on_staff) ledgers.push_back(y);
+    }
+    return ledgers;
+}
+
+static void apply_instrument(int idx) {
+    g_instrument_idx = idx % (int)(sizeof(INSTRUMENTS) / sizeof(INSTRUMENTS[0]));
+    g_inst = &INSTRUMENTS[g_instrument_idx];
+    g_staff_pitch_min = g_inst->pitch_min;
+    g_staff_pitch_max = g_inst->pitch_max;
+    g_staff_main = g_inst->staff_main;
+    g_staff_ledger = build_ledger_lines(g_staff_pitch_min, g_staff_pitch_max, g_staff_main);
+    g_note_labels.clear();
+    for (float y = g_staff_pitch_min; y <= g_staff_pitch_max + 0.001f; y += Y_STEP) {
+        g_note_labels.push_back({pitch_y_to_note(y), y});
+    }
+}
+
+struct VizPalette {
+    const char* name;
+    Color bg, header_top, header_bot, panel_bg, panel_border;
+    Color staff_surface, staff_line, ledger_line, label_color;
+    Color now_line, text_bright, text_dim, accent;
+    Color col_in_tune, col_sharp, col_flat, col_rest;
+    Color beat_grid, bar_grid;
+    Color good_zone, tune_marker;
+};
+
+static VizPalette g_pal{};
+static int g_theme_idx = 0;
+static float g_in_tune_cents = 5.0f;
+
+// Grey-scale palettes only (default: Light Grey). Press T to cycle darker.
+static const VizPalette THEME_PRESETS[] = {
+    // 0 — default
+    { "Light Grey",
+      {0xd8,0xdc,0xe0,0xff}, {0xcc,0xd0,0xd6,0xff}, {0xc0,0xc6,0xcc,0xff},
+      {0xe4,0xe8,0xec,0xf8}, {0xa8,0xb0,0xb8,0xff},
+      {0xee,0xf0,0xf2,0xff}, {0x4a,0x54,0x60,0xcc}, {0x8a,0x94,0xa0,0x99},
+      {0x3a,0x44,0x50,0xff}, {0x18,0x1e,0x24,0xff}, {0x5a,0x64,0x70,0xff},
+      {0x6a,0x74,0x80,0xff}, {0x2a,0x70,0xb8,0xff},
+      {0x18,0x8a,0x44,0xff}, {0xc8,0x34,0x2c,0xff}, {0x1a,0x78,0xb8,0xff},
+      {0xb0,0xb8,0xc0,0x88}, {0x98,0xa8,0xb8,0xff}, {0x78,0x88,0x98,0xff},
+      {0x78,0xb8,0x90,0xff}, {0x38,0x98,0x60,0xff} },
+    { "Silver",
+      {0xe8,0xea,0xec,0xff}, {0xdc,0xe0,0xe4,0xff}, {0xd0,0xd4,0xd8,0xff},
+      {0xf2,0xf4,0xf6,0xf8}, {0xb0,0xb8,0xc0,0xff},
+      {0xf6,0xf8,0xfa,0xff}, {0x4a,0x54,0x60,0xcc}, {0x8a,0x94,0xa0,0x99},
+      {0x3a,0x44,0x50,0xff}, {0x18,0x1e,0x24,0xff}, {0x5a,0x64,0x70,0xff},
+      {0x6a,0x74,0x80,0xff}, {0x2a,0x70,0xb8,0xff},
+      {0x18,0x8a,0x44,0xff}, {0xc8,0x34,0x2c,0xff}, {0x1a,0x78,0xb8,0xff},
+      {0xc0,0xc8,0xd0,0x88}, {0xa0,0xb0,0xc0,0xff}, {0x80,0x90,0xa0,0xff},
+      {0x78,0xb8,0x90,0xff}, {0x38,0x98,0x60,0xff} },
+    { "Medium Grey",
+      {0xb8,0xbc,0xc0,0xff}, {0xac,0xb0,0xb6,0xff}, {0xa0,0xa6,0xac,0xff},
+      {0xc4,0xc8,0xcc,0xf8}, {0x90,0x98,0xa0,0xff},
+      {0xcc,0xd0,0xd4,0xff}, {0x3a,0x44,0x50,0xcc}, {0x7a,0x84,0x90,0x99},
+      {0x2a,0x34,0x40,0xff}, {0x14,0x18,0x1c,0xff}, {0x4a,0x54,0x60,0xff},
+      {0x5a,0x64,0x70,0xff}, {0x2a,0x68,0xb0,0xff},
+      {0x18,0x8a,0x44,0xff}, {0xc8,0x34,0x2c,0xff}, {0x1a,0x78,0xb8,0xff},
+      {0x98,0xa0,0xa8,0x88}, {0x88,0x98,0xa8,0xff}, {0x68,0x78,0x88,0xff},
+      {0x70,0xb0,0x88,0xff}, {0x30,0x90,0x58,0xff} },
+    { "Slate Grey",
+      {0x98,0x9c,0xa4,0xff}, {0x8c,0x90,0x98,0xff}, {0x80,0x86,0x8e,0xff},
+      {0xa4,0xa8,0xb0,0xf8}, {0x70,0x78,0x82,0xff},
+      {0xac,0xb0,0xb8,0xff}, {0x58,0x62,0x6e,0xcc}, {0x88,0x92,0x9c,0x99},
+      {0xe8,0xec,0xf0,0xff}, {0xf4,0xf6,0xf8,0xff}, {0xc8,0xd0,0xd8,0xff},
+      {0xb0,0xb8,0xc0,0xff}, {0x5a,0xa8,0xe0,0xff},
+      {0x50,0xd8,0x78,0xff}, {0xf0,0x58,0x48,0xff}, {0x58,0xb8,0xf0,0xff},
+      {0x78,0x80,0x88,0x88}, {0x90,0xa8,0xc0,0xff}, {0x70,0x88,0xa0,0xff},
+      {0x88,0xd0,0xa0,0xff}, {0x58,0xb0,0x78,0xff} },
+    { "Graphite",
+      {0x6c,0x70,0x78,0xff}, {0x60,0x64,0x6c,0xff}, {0x54,0x5a,0x62,0xff},
+      {0x78,0x7c,0x84,0xf8}, {0x48,0x50,0x58,0xff},
+      {0x80,0x84,0x8c,0xff}, {0x68,0x72,0x7e,0xcc}, {0x98,0xa2,0xac,0x99},
+      {0xe0,0xe4,0xe8,0xff}, {0xf0,0xf2,0xf4,0xff}, {0xb8,0xc0,0xc8,0xff},
+      {0xa0,0xa8,0xb0,0xff}, {0x68,0xb0,0xe8,0xff},
+      {0x58,0xe0,0x80,0xff}, {0xf0,0x60,0x50,0xff}, {0x60,0xc0,0xf8,0xff},
+      {0x58,0x60,0x68,0x88}, {0x88,0xa0,0xb8,0xff}, {0x68,0x80,0x98,0xff},
+      {0x80,0xd8,0xa0,0xff}, {0x50,0xb8,0x70,0xff} },
+    { "Charcoal",
+      {0x48,0x4c,0x54,0xff}, {0x3c,0x40,0x48,0xff}, {0x30,0x36,0x3e,0xff},
+      {0x54,0x58,0x60,0xf8}, {0x28,0x30,0x38,0xff},
+      {0x5c,0x60,0x68,0xff}, {0x78,0x82,0x8c,0xcc}, {0x88,0x92,0x9c,0x99},
+      {0xe4,0xe8,0xec,0xff}, {0xf4,0xf6,0xf8,0xff}, {0xa8,0xb0,0xb8,0xff},
+      {0x90,0x98,0xa0,0xff}, {0x78,0xc0,0xf8,0xff},
+      {0x60,0xf0,0x88,0xff}, {0xff,0x68,0x58,0xff}, {0x70,0xd0,0xff,0xff},
+      {0x38,0x40,0x48,0x88}, {0x90,0xa8,0xc0,0xff}, {0x70,0x88,0xa0,0xff},
+      {0x90,0xe8,0xb0,0xff}, {0x60,0xc8,0x80,0xff} },
+};
+
+static Color BG, HEADER_TOP, HEADER_BOT, PANEL_BG, PANEL_BORDER;
+static Color STAFF_SURFACE, STAFF_LINE, LEDGER_LINE, LABEL_COLOR;
+static Color NOW_LINE, TEXT_BRIGHT, TEXT_DIM, ACCENT_BLUE;
+static Color COL_IN_TUNE, COL_SHARP, COL_FLAT, COL_REST;
+static Color BEAT_GRID_COL, BAR_GRID_COL;
+static Color GOOD_ZONE_COL, TUNE_MARKER_COL;
+
+static void apply_theme(int idx) {
+    g_theme_idx = idx % (int)(sizeof(THEME_PRESETS) / sizeof(THEME_PRESETS[0]));
+    g_pal = THEME_PRESETS[g_theme_idx];
+    BG = g_pal.bg; HEADER_TOP = g_pal.header_top; HEADER_BOT = g_pal.header_bot;
+    PANEL_BG = g_pal.panel_bg; PANEL_BORDER = g_pal.panel_border;
+    STAFF_SURFACE = g_pal.staff_surface; STAFF_LINE = g_pal.staff_line;
+    LEDGER_LINE = g_pal.ledger_line; LABEL_COLOR = g_pal.label_color;
+    NOW_LINE = g_pal.now_line; TEXT_BRIGHT = g_pal.text_bright;
+    TEXT_DIM = g_pal.text_dim; ACCENT_BLUE = g_pal.accent;
+    COL_IN_TUNE = g_pal.col_in_tune; COL_SHARP = g_pal.col_sharp;
+    COL_FLAT = g_pal.col_flat; COL_REST = g_pal.col_rest;
+    BEAT_GRID_COL = g_pal.beat_grid; BAR_GRID_COL = g_pal.bar_grid;
+    GOOD_ZONE_COL = g_pal.good_zone; TUNE_MARKER_COL = g_pal.tune_marker;
+}
 
 constexpr float TRACE_CORE_WIDTH = 2.4f;
 constexpr int   HUD_HEIGHT       = 96;
-constexpr float STAFF_GUTTER_W   = 80.0f;  // fixed left column for clef + labels
+constexpr float STAFF_GUTTER_W   = 88.0f;  // fixed left column for clef + labels
 constexpr float CENTS_RIBBON_H   = 228.0f; // 50% taller than original 152
 
 // Simple square-wave generator for the metronome (raylib 6+ does not provide GenWaveSquare in the public API).
@@ -167,15 +286,27 @@ static std::atomic<DWORD>    g_serial_last_error{0};
 
 // Screen Y grows downward; musical pitch grows upward — flip when drawing the staff.
 inline float staff_pitch_to_screen_y(float pitch_y, float staff_top, float y_scale) {
-    float flipped = STAFF_PITCH_MIN + STAFF_PITCH_MAX - pitch_y;
-    return staff_top + flipped * y_scale;
+    float flipped = g_staff_pitch_min + g_staff_pitch_max - pitch_y;
+    return staff_top + (flipped - g_staff_pitch_min) * y_scale;
 }
 
 float pitch_to_y(const std::string& note_str) {
     if (note_str.empty()) return 4.0f;
     if (note_str == "---" || note_str == "REST") return Y_REST;
+
     char note = static_cast<char>(std::toupper(note_str[0]));
-    // Extract octave (last digit char)
+    int accidental = 0;  // +1 sharp, -1 flat (half step in staff Y)
+    size_t acc_i = 1;
+    if (acc_i < note_str.size()) {
+        if (note_str[acc_i] == '#') {
+            accidental = 1;
+            ++acc_i;
+        } else if (note_str[acc_i] == 'b' || note_str[acc_i] == 'B') {
+            accidental = -1;
+            ++acc_i;
+        }
+    }
+
     int octave = 3;
     for (int i = (int)note_str.size() - 1; i >= 0; --i) {
         if (std::isdigit(note_str[i])) {
@@ -183,21 +314,23 @@ float pitch_to_y(const std::string& note_str) {
             break;
         }
     }
-    static const int base[7] = {0,2,4,5,7,9,11}; // C D E F G A B  (for semitone, not needed here)
-    // Our normalized staff space: C3=1.2, each step = 0.4
+
+    // Diatonic staff space: C3=1.2, natural letter steps = 0.4
     int step = 0;
     switch (note) {
-        case 'C': step=0; break; case 'D': step=1; break; case 'E': step=2; break;
-        case 'F': step=3; break; case 'G': step=4; break; case 'A': step=5; break;
-        case 'B': step=6; break;
+        case 'C': step = 0; break; case 'D': step = 1; break; case 'E': step = 2; break;
+        case 'F': step = 3; break; case 'G': step = 4; break; case 'A': step = 5; break;
+        case 'B': step = 6; break;
         default: return 4.0f;
     }
+
     float y = 1.2f + (step + (octave - 3) * 7) * Y_STEP;
+    y += accidental * (Y_STEP * 0.5f);  // C# sits midway between C and D, etc.
     return y;
 }
 
 Color get_color(float cents) {
-    if (std::fabs(cents) < IN_TUNE_CENTS) return COL_IN_TUNE;
+    if (std::fabs(cents) < g_in_tune_cents) return COL_IN_TUNE;
     return (cents > 0.0f) ? COL_SHARP : COL_FLAT;
 }
 
@@ -262,8 +395,10 @@ public:
                     rest_until = t + 0.6f + (std::rand() % 100) / 80.0f; // 0.6–1.8s rests
                 } else {
                     // occasional note change (gliss / shift)
-                    static const char* notes[] = {"C3","D3","E3","F3","G3","A3","B3","C4","D4","E4","F4","G4","A4"};
-                    current_note = notes[std::rand() % (sizeof(notes)/sizeof(notes[0]))];
+                    if (!g_note_labels.empty()) {
+                        size_t idx = (size_t)(std::rand() % (int)g_note_labels.size());
+                        current_note = g_note_labels[idx].first;
+                    }
                     base_y = pitch_to_y(current_note);
                     rest_until = t + 0.15f;
                 }
@@ -522,37 +657,63 @@ private:
 // DRAW HELPERS
 // =============================================================================
 
+static void draw_clef_cutout(Vector2 c, float r) {
+    DrawCircleV(c, r, STAFF_SURFACE);
+}
+
 void draw_alto_clef(Vector2 base, float scale, Color col) {
-    // Stylized alto clef (C-clef). Good enough to read as "proper" on the staff.
-    // Vertical spine + two "C" curves (upper + lower) + small diamond/ear.
-    float x = base.x;
-    float y = base.y;
-    float s = scale;
-
-    // Main vertical bar
+    float x = base.x, y = base.y, s = scale;
     DrawLineEx({x, y - 38*s}, {x, y + 38*s}, 3.5f*s, col);
-
-    // Upper curve (like a fat C or backwards 3)
-    Vector2 p1 = {x, y - 28*s};
-    Vector2 p2 = {x + 14*s, y - 32*s};
-    Vector2 p3 = {x + 22*s, y - 18*s};
-    DrawLineEx(p1, p2, 2.8f*s, col);
-    DrawLineEx(p2, p3, 2.6f*s, col);
-    DrawLineEx(p3, {x + 11*s, y - 8*s}, 2.6f*s, col);
+    DrawLineEx({x, y - 28*s}, {x + 14*s, y - 32*s}, 2.8f*s, col);
+    DrawLineEx({x + 14*s, y - 32*s}, {x + 22*s, y - 18*s}, 2.6f*s, col);
+    DrawLineEx({x + 22*s, y - 18*s}, {x + 11*s, y - 8*s}, 2.6f*s, col);
     DrawLineEx({x + 11*s, y - 8*s}, {x + 2*s, y - 12*s}, 2.4f*s, col);
-
-    // Lower curve
-    Vector2 q1 = {x, y + 28*s};
-    Vector2 q2 = {x + 14*s, y + 32*s};
-    Vector2 q3 = {x + 22*s, y + 18*s};
-    DrawLineEx(q1, q2, 2.8f*s, col);
-    DrawLineEx(q2, q3, 2.6f*s, col);
-    DrawLineEx(q3, {x + 11*s, y + 8*s}, 2.6f*s, col);
+    DrawLineEx({x, y + 28*s}, {x + 14*s, y + 32*s}, 2.8f*s, col);
+    DrawLineEx({x + 14*s, y + 32*s}, {x + 22*s, y + 18*s}, 2.6f*s, col);
+    DrawLineEx({x + 22*s, y + 18*s}, {x + 11*s, y + 8*s}, 2.6f*s, col);
     DrawLineEx({x + 11*s, y + 8*s}, {x + 2*s, y + 12*s}, 2.4f*s, col);
-
-    // Small central "waist" diamond / ear
     DrawCircleV({x + 4*s, y}, 3.5f*s, col);
-    DrawCircleV({x + 4*s, y}, 1.6f*s, BG); // cutout for classic look
+    draw_clef_cutout({x + 4*s, y}, 1.6f*s);
+}
+
+void draw_bass_clef(Vector2 base, float scale, Color col) {
+    float x = base.x, y = base.y, s = scale;
+    // Stylized F-clef (bass): curved spine + two dots on F line.
+    DrawLineEx({x - 4*s, y - 34*s}, {x + 6*s, y - 26*s}, 3.2f*s, col);
+    DrawLineEx({x + 6*s, y - 26*s}, {x + 10*s, y - 10*s}, 3.0f*s, col);
+    DrawLineEx({x + 10*s, y - 10*s}, {x + 2*s, y + 6*s}, 3.0f*s, col);
+    DrawLineEx({x + 2*s, y + 6*s}, {x - 2*s, y + 24*s}, 2.8f*s, col);
+    DrawLineEx({x - 2*s, y + 24*s}, {x + 8*s, y + 34*s}, 2.8f*s, col);
+    DrawLineEx({x + 8*s, y + 34*s}, {x + 16*s, y + 22*s}, 2.6f*s, col);
+    DrawLineEx({x + 16*s, y + 22*s}, {x + 12*s, y + 4*s}, 2.6f*s, col);
+    DrawLineEx({x + 12*s, y + 4*s}, {x + 4*s, y - 8*s}, 2.4f*s, col);
+    DrawCircleV({x + 24*s, y - 5*s}, 3.2f*s, col);
+    DrawCircleV({x + 24*s, y + 11*s}, 3.2f*s, col);
+}
+
+void draw_treble_clef(Vector2 base, float scale, Color col) {
+    float x = base.x, y = base.y, s = scale;
+    // Stylized G-clef (treble): vertical stem + spiral around G line.
+    DrawLineEx({x + 2*s, y + 30*s}, {x - 2*s, y - 34*s}, 3.0f*s, col);
+    DrawLineEx({x - 2*s, y - 34*s}, {x + 10*s, y - 30*s}, 2.8f*s, col);
+    DrawLineEx({x + 10*s, y - 30*s}, {x + 18*s, y - 18*s}, 2.6f*s, col);
+    DrawLineEx({x + 18*s, y - 18*s}, {x + 14*s, y - 4*s}, 2.6f*s, col);
+    DrawLineEx({x + 14*s, y - 4*s}, {x + 2*s, y + 2*s}, 2.6f*s, col);
+    DrawLineEx({x + 2*s, y + 2*s}, {x - 4*s, y + 14*s}, 2.4f*s, col);
+    DrawLineEx({x - 4*s, y + 14*s}, {x + 6*s, y + 22*s}, 2.4f*s, col);
+    DrawLineEx({x + 6*s, y + 22*s}, {x + 16*s, y + 16*s}, 2.4f*s, col);
+    DrawLineEx({x + 16*s, y + 16*s}, {x + 12*s, y + 6*s}, 2.2f*s, col);
+    DrawLineEx({x + 12*s, y + 6*s}, {x + 4*s, y + 2*s}, 2.2f*s, col);
+    DrawCircleV({x + 2*s, y + 2*s}, 2.8f*s, col);
+    draw_clef_cutout({x + 2*s, y + 2*s}, 1.2f*s);
+}
+
+static void draw_active_clef(Vector2 base, float scale, Color col) {
+    switch (g_inst->clef) {
+        case ClefKind::Alto:   draw_alto_clef(base, scale, col); break;
+        case ClefKind::Bass:   draw_bass_clef(base, scale, col); break;
+        case ClefKind::Treble: draw_treble_clef(base, scale, col); break;
+    }
 }
 
 void draw_glowing_polyline(const std::vector<Vector2>& pts, Color base_col, float core_w, int glow_layers) {
@@ -726,11 +887,14 @@ public:
 
     void run() {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
-        InitWindow(DEFAULT_WIDTH, DEFAULT_HEIGHT, "Intune — Viola (Raylib) • Smooth Musical Staff");
+        InitWindow(DEFAULT_WIDTH, DEFAULT_HEIGHT, "Intune — Viola (Raylib)");
         SetTargetFPS(60);
         SetExitKey(KEY_NULL);
         SetWindowFocused();
         load_ui_fonts();
+        apply_theme(0);
+        apply_instrument(0);
+        update_window_title();
 
         beats_visible_ = DEFAULT_BEATS;
         bpm_ = DEFAULT_BPM;
@@ -776,6 +940,7 @@ public:
             last_wall_ = now;
 
             frame_dt_ = std::clamp(dt, 0.001f, 0.05f);
+            update_layout();
             handle_input(dt);
             drain_incoming();
             update_timing(dt);
@@ -788,6 +953,7 @@ public:
             draw_hud();
             draw_staff_view();
             draw_cents_ribbon();
+            draw_inspection_overlay();
             draw_bottom_controls();
 
             if (config_.debug) {
@@ -844,11 +1010,12 @@ private:
     Sound click_sound_{0};
     Sound accent_sound_{0};
 
-    // Inspection (paused)
-    bool  show_crosshair_ = false;
-    float cross_x_ = 0.0f;
-    float cross_y_ = 0.0f;
-    PitchSample cross_sample_{};
+    // Inspection (paused hover)
+    bool  inspect_active_ = false;
+    float inspect_x_ = 0.0f;
+    float trace_x0_ = 0.0f;
+    float trace_x1_ = 0.0f;
+    PitchSample inspect_sample_{};
 
     // View geometry (updated each frame)
     Rectangle staff_rect_{};
@@ -857,8 +1024,17 @@ private:
     size_t last_trace_pts_ = 0;
     float frame_dt_ = 1.0f / 60.0f;
     float bpm_hold_timer_ = 0.0f;
+    float tune_hold_timer_ = 0.0f;
     float trace_screen_playhead_y_ = 0.0f;
     float trace_screen_target_y_ = 0.0f;
+
+    void update_window_title() {
+        const char* clef_name = (g_inst->clef == ClefKind::Alto) ? "Alto" :
+                                (g_inst->clef == ClefKind::Bass) ? "Bass" : "Treble";
+        char title[96];
+        std::snprintf(title, sizeof(title), "Intune — %s (%s Clef)", g_inst->name, clef_name);
+        SetWindowTitle(title);
+    }
 
     float scroll_subpixel(float usable_w) const {
         const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
@@ -977,27 +1153,64 @@ private:
             bpm_hold_timer_ = 0.0f;
         }
 
+        if (IsKeyPressed(KEY_T)) {
+            apply_theme(g_theme_idx + 1);
+            printf("[theme] %s\n", g_pal.name);
+        }
+        if (IsKeyPressed(KEY_I)) {
+            apply_instrument(g_instrument_idx + 1);
+            update_window_title();
+            printf("[instrument] %s  (%s clef, C-major %s–%s)\n",
+                   g_inst->name,
+                   g_inst->clef == ClefKind::Alto ? "Alto" :
+                   g_inst->clef == ClefKind::Bass ? "Bass" : "Treble",
+                   pitch_y_to_note(g_staff_pitch_min).c_str(),
+                   pitch_y_to_note(g_staff_pitch_max).c_str());
+        }
+        if (IsKeyPressed(KEY_MINUS)) {
+            g_in_tune_cents = std::max(2.0f, g_in_tune_cents - 1.0f);
+            tune_hold_timer_ = 0.4f;
+        } else if (IsKeyDown(KEY_MINUS)) {
+            if (tune_hold_timer_ > 0.0f) {
+                tune_hold_timer_ -= frame_dt_;
+            } else {
+                g_in_tune_cents = std::max(2.0f, g_in_tune_cents - 0.5f);
+                tune_hold_timer_ = 0.06f;
+            }
+        } else if (IsKeyPressed(KEY_EQUAL)) {
+            g_in_tune_cents = std::min(25.0f, g_in_tune_cents + 1.0f);
+            tune_hold_timer_ = 0.4f;
+        } else if (IsKeyDown(KEY_EQUAL)) {
+            if (tune_hold_timer_ > 0.0f) {
+                tune_hold_timer_ -= frame_dt_;
+            } else {
+                g_in_tune_cents = std::min(25.0f, g_in_tune_cents + 0.5f);
+                tune_hold_timer_ = 0.06f;
+            }
+        } else if (IsKeyReleased(KEY_MINUS) || IsKeyReleased(KEY_EQUAL)) {
+            tune_hold_timer_ = 0.0f;
+        }
+
         // Visible window
         if (IsKeyPressed(KEY_SEMICOLON)) beats_visible_ = std::max(1.5f, beats_visible_ - 0.25f);
         if (IsKeyPressed(KEY_APOSTROPHE)) beats_visible_ = std::min(16.0f, beats_visible_ + 0.25f);
 
-        // Mouse inspection only meaningful when paused
+        // Paused: hover anywhere on the trace (staff + cents) to inspect
         if (paused_) {
             Vector2 m = GetMousePosition();
-            if (CheckCollisionPointRec(m, staff_rect_)) {
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-                    show_crosshair_ = true;
-                    cross_x_ = m.x;
-                    cross_y_ = m.y;
-                    pick_crosshair_sample(m.x);
-                }
+            Rectangle inspect_rect = {
+                trace_x0_, staff_rect_.y,
+                trace_x1_ - trace_x0_,
+                (cents_rect_.y + cents_rect_.height) - staff_rect_.y
+            };
+            if (CheckCollisionPointRec(m, inspect_rect)) {
+                inspect_x_ = std::clamp(m.x, trace_x0_, trace_x1_);
+                inspect_active_ = pick_inspect_sample(inspect_x_);
             } else {
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                    show_crosshair_ = false;
-                }
+                inspect_active_ = false;
             }
         } else {
-            show_crosshair_ = false;
+            inspect_active_ = false;
         }
     }
 
@@ -1058,7 +1271,7 @@ private:
                 sum_good += ac;
                 count++;
 
-                if (std::fabs(s.cents) <= IN_TUNE_CENTS) {
+                if (std::fabs(s.cents) <= g_in_tune_cents) {
                     if (!in_streak) {
                         streak_start_ts = s.teensy_ts;
                         in_streak = true;
@@ -1129,39 +1342,117 @@ private:
         paused_display_ms_ = 0.0f;
         latest_ts_ = 0.0f;
         current_streak_s_ = 0.0f;
-        show_crosshair_ = false;
+        inspect_active_ = false;
         trace_screen_playhead_y_ = 0.0f;
         trace_screen_target_y_ = 0.0f;
     }
 
-    void pick_crosshair_sample(float screen_x) {
-        if (history_.size() < 2) return;
+    void update_layout() {
+        int sw = GetScreenWidth();
+        staff_rect_ = {36.0f, (float)HUD_HEIGHT + 14.0f, (float)sw - 72.0f, 508.0f};
+        staff_y_scale_ = staff_rect_.height / (g_staff_pitch_max - g_staff_pitch_min + 0.6f);
+        cents_rect_ = {36.0f, staff_rect_.y + staff_rect_.height + 12.0f, (float)sw - 72.0f, CENTS_RIBBON_H};
+        trace_x0_ = staff_rect_.x + STAFF_GUTTER_W + 10.0f;
+        trace_x1_ = staff_rect_.x + staff_rect_.width - 14.0f;
+    }
 
-        float left_beat = -beats_visible_;
-        float right_beat = 0.28f;
-        float trace_x0 = staff_rect_.x + STAFF_GUTTER_W + 10.0f;
-        float trace_x1 = staff_rect_.x + staff_rect_.width - 14.0f;
-        float usable_w = trace_x1 - trace_x0;
+    bool pick_inspect_sample(float screen_x) {
+        if (history_.empty()) return false;
 
-        float target_beat = left_beat + (screen_x - trace_x0) / usable_w * (right_beat - left_beat);
+        const float usable_w = trace_x1_ - trace_x0_;
+        const float left_beat = -beats_visible_;
+        const float right_beat = 0.28f;
+        const float sub_px = scroll_subpixel(usable_w);
+        const float visible_sec = beats_to_seconds(beats_visible_, bpm_);
+        const float now_ts = scroll_now_ts();
 
-        float best_d = 1e9f;
+        auto beat_to_x = [&](float beat) {
+            return trace_x0_ + (beat - left_beat) / (right_beat - left_beat) * usable_w;
+        };
+
+        float best_px = 1e9f;
         PitchSample best{};
-        for (auto& s : history_) {
+        bool found = false;
+        for (const auto& s : history_) {
             if (s.teensy_ts <= 0.0f) continue;
-            float age = (scroll_now_ts() - s.teensy_ts) / 1000.0f;
-            if (age < 0 || age > beats_to_seconds(beats_visible_, bpm_) + 1.0f) continue;
-            float bx = -age * (bpm_ / 60.0f);
-            float d = std::fabs(bx - target_beat);
-            if (d < best_d) {
-                best_d = d;
+            float age = (now_ts - s.teensy_ts) / 1000.0f;
+            if (age < 0.0f || age > visible_sec + 1.0f) continue;
+            float sx = beat_to_x(-age * (bpm_ / 60.0f)) - sub_px;
+            float d = std::fabs(sx - screen_x);
+            if (d < best_px) {
+                best_px = d;
                 best = s;
+                found = true;
             }
         }
-        if (best_d < 0.6f) {
-            cross_sample_ = best;
-            cross_x_ = screen_x;
-            cross_y_ = staff_pitch_to_screen_y(best.y_pos, staff_rect_.y, staff_y_scale_);
+        if (!found) return false;
+        inspect_sample_ = best;
+        return true;
+    }
+
+    void draw_inspection_overlay() {
+        if (!paused_ || !inspect_active_) return;
+
+        const float staff_top = staff_rect_.y + 4.0f;
+        const float staff_bot = staff_rect_.y + staff_rect_.height - 4.0f;
+        const float cents_top = cents_rect_.y + 28.0f;
+        const float cents_bot = cents_rect_.y + cents_rect_.height - 10.0f;
+
+        const bool is_rest = (inspect_sample_.note == "---" || inspect_sample_.note == "REST");
+        Color accent = is_rest ? COL_REST : get_color(inspect_sample_.cents);
+
+        // Vertical scrub line through staff + cents
+        DrawLineEx({inspect_x_, staff_top}, {inspect_x_, cents_bot}, 2.2f, with_alpha(ACCENT_BLUE, 0.85f));
+        DrawLineEx({inspect_x_, staff_top}, {inspect_x_, cents_bot}, 5.0f, with_alpha(ACCENT_BLUE, 0.12f));
+
+        if (!is_rest) {
+            float pitch_y = staff_pitch_to_screen_y(inspect_sample_.y_pos, staff_rect_.y, staff_y_scale_);
+            DrawLineEx({trace_x0_, pitch_y}, {trace_x1_, pitch_y}, 1.2f, with_alpha(accent, 0.45f));
+            DrawCircleV({inspect_x_, pitch_y}, 9.0f, with_alpha(accent, 0.18f));
+            DrawCircleV({inspect_x_, pitch_y}, 5.0f, accent);
+
+            const float plot_top = cents_rect_.y + 62.0f;
+            const float plot_bot = cents_rect_.y + cents_rect_.height - 22.0f;
+            const float mid_y = (plot_top + plot_bot) * 0.5f;
+            const float scale_y = (plot_bot - plot_top) * 0.5f / 25.0f;
+            float cents_y = mid_y - inspect_sample_.cents * scale_y;
+            DrawCircleV({inspect_x_, cents_y}, 7.0f, with_alpha(accent, 0.20f));
+            DrawCircleV({inspect_x_, cents_y}, 4.0f, accent);
+        }
+
+        // Readout card
+        char note_line[32];
+        char cents_line[48];
+        if (is_rest) {
+            std::snprintf(note_line, sizeof(note_line), "REST");
+            cents_line[0] = '\0';
+        } else {
+            std::snprintf(note_line, sizeof(note_line), "%s", inspect_sample_.note.c_str());
+            const char* qual = (std::fabs(inspect_sample_.cents) < g_in_tune_cents) ? "in tune" :
+                               (inspect_sample_.cents > 0.0f) ? "sharp" : "flat";
+            std::snprintf(cents_line, sizeof(cents_line), "%+.1f cents  (%s)",
+                          inspect_sample_.cents, qual);
+        }
+
+        const float note_sz = 28.0f;
+        const float cents_sz = 17.0f;
+        Vector2 note_szv = measure_font(g_font_ui, note_line, note_sz);
+        Vector2 cents_szv = is_rest ? Vector2{0, 0} : measure_font(g_font_ui, cents_line, cents_sz);
+        float card_w = std::max(note_szv.x, cents_szv.x) + 28.0f;
+        float card_h = is_rest ? 44.0f : 72.0f;
+
+        float card_x = inspect_x_ + 16.0f;
+        float card_y = staff_top + 12.0f;
+        if (card_x + card_w > trace_x1_ - 8.0f) {
+            card_x = inspect_x_ - card_w - 16.0f;
+        }
+        card_x = std::clamp(card_x, trace_x0_ + 4.0f, trace_x1_ - card_w - 4.0f);
+
+        Rectangle card = {card_x, card_y, card_w, card_h};
+        draw_panel_frame(card, with_alpha(PANEL_BG, 0.96f), with_alpha(accent, 0.75f), 8.0f);
+        draw_font_text(g_font_ui, note_line, {card.x + 14.0f, card.y + 10.0f}, note_sz, accent);
+        if (!is_rest) {
+            draw_font_text(g_font_ui, cents_line, {card.x + 14.0f, card.y + 42.0f}, cents_sz, TEXT_DIM);
         }
     }
 
@@ -1201,7 +1492,7 @@ private:
         // Note readout card (left)
         Rectangle note_card = {32.0f, 14.0f, 220.0f, 68.0f};
         Color card_border = have && note_txt != "REST" ? with_alpha(main_col, 0.55f) : with_alpha(PANEL_BORDER, 0.7f);
-        draw_panel_frame(note_card, with_alpha({0x08, 0x14, 0x30}, 0.75f), card_border, 8.0f);
+        draw_panel_frame(note_card, with_alpha(PANEL_BG, 0.92f), card_border, 8.0f);
 
         float note_size = 46.0f;
         draw_font_text(g_font_ui, note_txt.c_str(), {note_card.x + 18, note_card.y + 10}, note_size, main_col);
@@ -1238,8 +1529,8 @@ private:
 
         Rectangle streak_card = {(float)sw - 258.0f, 14.0f, 118.0f, 68.0f};
         Rectangle acc_card    = {(float)sw - 132.0f, 14.0f, 100.0f, 68.0f};
-        draw_panel_frame(streak_card, with_alpha({0x08, 0x14, 0x30}, 0.65f), with_alpha(PANEL_BORDER, 0.5f), 6.0f);
-        draw_panel_frame(acc_card,    with_alpha({0x08, 0x14, 0x30}, 0.65f), with_alpha(PANEL_BORDER, 0.5f), 6.0f);
+        draw_panel_frame(streak_card, with_alpha(PANEL_BG, 0.88f), with_alpha(PANEL_BORDER, 0.5f), 6.0f);
+        draw_panel_frame(acc_card,    with_alpha(PANEL_BG, 0.88f), with_alpha(PANEL_BORDER, 0.5f), 6.0f);
 
         draw_label_caps("IN TUNE", (int)streak_card.x + 12, (int)streak_card.y + 10, 11, with_alpha(TEXT_DIM, 0.65f));
         Color streak_col = (current_streak_s_ > 0.3f) ? COL_IN_TUNE : TEXT_BRIGHT;
@@ -1250,11 +1541,6 @@ private:
     }
 
     void draw_staff_view() {
-        int sw = GetScreenWidth();
-
-        staff_rect_ = {36.0f, (float)HUD_HEIGHT + 14.0f, (float)sw - 72.0f, 508.0f};
-        staff_y_scale_ = staff_rect_.height / 8.6f;
-
         draw_panel_frame(staff_rect_, STAFF_SURFACE, PANEL_BORDER, 8.0f);
 
         float trace_x0 = staff_rect_.x + STAFF_GUTTER_W + 10.0f;
@@ -1272,44 +1558,49 @@ private:
 
         // Fixed left gutter background + divider
         Rectangle gutter = {staff_rect_.x + 4.0f, staff_rect_.y + 4.0f, STAFF_GUTTER_W, staff_rect_.height - 8.0f};
-        DrawRectangleRounded(gutter, 6.0f, 6, with_alpha({0x15, 0x1a, 0x22}, 0.85f));
+        DrawRectangleRounded(gutter, 6.0f, 6, with_alpha(HEADER_BOT, 0.55f));
         float div_x = staff_rect_.x + STAFF_GUTTER_W + 6.0f;
         DrawLineEx({div_x, staff_rect_.y + 10}, {div_x, staff_rect_.y + staff_rect_.height - 10},
                    1.0f, with_alpha(PANEL_BORDER, 0.45f));
 
         // In-tune shaded bands (trace area only)
-        for (float sy : STAFF_MAIN) {
+        for (float sy : g_staff_main) {
             draw_intune_band(sy, trace_x0, trace_x1, staff_rect_.y, staff_y_scale_, COL_IN_TUNE);
         }
 
         // Staff lines (trace area only — don't cross the gutter)
-        for (float sy : STAFF_MAIN) {
+        for (float sy : g_staff_main) {
             float yy = y_to_screen(sy);
             DrawLineEx({trace_x0, yy}, {trace_x1, yy}, 1.4f, STAFF_LINE);
         }
-        for (float sy : STAFF_LEDGER) {
+        for (float sy : g_staff_ledger) {
             float yy = y_to_screen(sy);
             DrawLineEx({trace_x0 + 4, yy}, {trace_x1 - 4, yy}, 0.8f, LEDGER_LINE);
         }
 
-        // Alto clef — fixed in gutter, centered on middle line
-        float clef_x = staff_rect_.x + 22.0f;
-        draw_alto_clef({clef_x, y_to_screen(4.4f)}, 0.88f, with_alpha(STAFF_LINE, 0.9f));
+        // Clef — centered on instrument anchor pitch
+        float clef_x = staff_rect_.x + 24.0f;
+        float clef_scale = (g_inst->clef == ClefKind::Bass) ? 0.82f : 0.88f;
+        draw_active_clef({clef_x, y_to_screen(g_inst->clef_anchor)}, clef_scale, with_alpha(STAFF_LINE, 0.92f));
 
-        // Pitch labels — fixed column, all notes, letter + subscript octave
+        // Pitch labels — C-major range, every semitone
         float label_right = staff_rect_.x + STAFF_GUTTER_W - 8.0f;
-        for (const auto& [nm, yy] : NOTE_LABELS) {
+        for (const auto& [nm, yy] : g_note_labels) {
             draw_pitch_label(nm.c_str(), label_right, y_to_screen(yy));
         }
 
         // Panel header (top-right of staff — avoids trace overlap)
-        char time_label[64];
-        std::snprintf(time_label, sizeof(time_label), "%d BPM  |  %.0f beats", (int)bpm_, beats_visible_);
+        char time_label[128];
+        std::snprintf(time_label, sizeof(time_label), "%s  %s–%s  |  %d BPM  |  %.0f beats",
+                      g_inst->name,
+                      pitch_y_to_note(g_staff_pitch_min).c_str(),
+                      pitch_y_to_note(g_staff_pitch_max).c_str(),
+                      (int)bpm_, beats_visible_);
         Vector2 tl_sz = measure_font(g_font_ui, time_label, 14.0f);
         draw_font_text(g_font_ui, time_label,
                        {staff_rect_.x + staff_rect_.width - tl_sz.x - 16, staff_rect_.y + 10},
                        14.0f, with_alpha(TEXT_DIM, 0.8f));
-        draw_label_caps("PITCH TRACE", (int)trace_x0, (int)(staff_rect_.y + 52), 11, with_alpha(TEXT_DIM, 0.55f));
+        draw_label_caps("PITCH TRACE", (int)trace_x0, (int)(staff_rect_.y + 52), 33, with_alpha(TEXT_DIM, 0.55f));
 
         // Beat / measure grid (behind trace)
         {
@@ -1421,22 +1712,6 @@ private:
             DrawCircleV({now_screen_x, dot_y}, 1.8f, TEXT_BRIGHT);
         }
 
-        // Crosshair + tooltip (paused inspection)
-        if (paused_ && show_crosshair_) {
-            DrawLineEx({cross_x_, staff_rect_.y + 4}, {cross_x_, staff_rect_.y + staff_rect_.height - 4},
-                       1.0f, with_alpha(COL_SHARP, 0.7f));
-            DrawLineEx({staff_rect_.x + 4, cross_y_}, {staff_rect_.x + staff_rect_.width - 4, cross_y_},
-                       1.0f, with_alpha(COL_SHARP, 0.7f));
-
-            // Tooltip
-            char tip[128];
-            std::snprintf(tip, sizeof(tip), "%s  %+.1f¢", cross_sample_.note.c_str(), cross_sample_.cents);
-            Vector2 tip_sz = measure_font(g_font_ui, tip, 16.0f);
-            float tx = cross_x_ + 14;
-            float ty = cross_y_ - 28;
-            DrawRectangle((int)tx - 6, (int)ty - 4, (int)tip_sz.x + 12, 24, with_alpha({0x0a, 0x0a, 0x12}, 0.85f));
-            draw_font_text(g_font_ui, tip, {tx, ty}, 16.0f, TEXT_BRIGHT);
-        }
     }
 
     // Very small helper because raylib Color doesn't have == by default in all versions
@@ -1445,9 +1720,6 @@ private:
     }
 
     void draw_cents_ribbon() {
-        int sw = GetScreenWidth();
-        cents_rect_ = {36.0f, staff_rect_.y + staff_rect_.height + 12.0f, (float)sw - 72.0f, CENTS_RIBBON_H};
-
         draw_panel_frame(cents_rect_, with_alpha(STAFF_SURFACE, 0.95f), PANEL_BORDER, 8.0f);
 
         float trace_x0 = cents_rect_.x + STAFF_GUTTER_W + 10.0f;
@@ -1461,22 +1733,129 @@ private:
             return trace_x0 + (b - left_beat) / (right_beat - left_beat) * usable;
         };
 
-        float mid_y = cents_rect_.y + cents_rect_.height * 0.52f;
-        float scale_y = (cents_rect_.height * 0.38f) / 25.0f;
+        const float plot_top = cents_rect_.y + 62.0f;
+        const float plot_bot = cents_rect_.y + cents_rect_.height - 22.0f;
+        const float mid_y = (plot_top + plot_bot) * 0.5f;
+        const float scale_y = (plot_bot - plot_top) * 0.5f / 25.0f;
+        const float label_left_right = cents_rect_.x + STAFF_GUTTER_W - 10.0f;
+        const float label_right_x0 = trace_x1 + 6.0f;
 
-        // In-tune band (±5¢)
-        float off = IN_TUNE_CENTS * scale_y;
-        DrawRectangle((int)trace_x0, (int)(mid_y - off), (int)(trace_x1 - trace_x0), (int)(off * 2.0f),
-                      with_alpha(COL_IN_TUNE, 0.06f));
+        auto cents_to_y = [&](float cents_val) { return mid_y - cents_val * scale_y; };
 
-        DrawLineEx({trace_x0, mid_y}, {trace_x1, mid_y}, 1.4f, with_alpha(COL_IN_TUNE, 0.45f));
-        DrawLineEx({trace_x0, mid_y - off}, {trace_x1, mid_y - off}, 0.8f, with_alpha(COL_IN_TUNE, 0.22f));
-        DrawLineEx({trace_x0, mid_y + off}, {trace_x1, mid_y + off}, 0.8f, with_alpha(COL_IN_TUNE, 0.22f));
+        auto draw_scale_tick = [&](float cents_val, Color col, float len = 8.0f) {
+            float y = cents_to_y(cents_val);
+            DrawLineEx({trace_x0 - len, y}, {trace_x0, y}, 1.0f, col);
+        };
+
+        struct CentsScaleLabel {
+            const char* txt;
+            float cents_val;
+            Color col;
+            float size;
+            bool right_edge;
+        };
+
+        auto layout_scale_labels = [&](const std::vector<CentsScaleLabel>& labels, bool right_edge) {
+            struct Slot { float ideal_y; float y; float size; const char* txt; Color col; };
+            std::vector<Slot> slots;
+            for (const auto& lb : labels) {
+                if (lb.right_edge != right_edge) continue;
+                float ideal = cents_to_y(lb.cents_val) - lb.size * 0.42f;
+                slots.push_back({ideal, ideal, lb.size, lb.txt, lb.col});
+            }
+            if (slots.empty()) return;
+
+            std::sort(slots.begin(), slots.end(),
+                      [](const Slot& a, const Slot& b) { return a.ideal_y < b.ideal_y; });
+
+            const float gap = 4.0f;
+            for (size_t i = 1; i < slots.size(); ++i) {
+                float min_y = slots[i - 1].y + slots[i - 1].size + gap;
+                if (slots[i].y < min_y) slots[i].y = min_y;
+            }
+            float overflow = slots.back().y + slots.back().size - plot_bot;
+            if (overflow > 0.0f) {
+                for (auto& s : slots) s.y -= overflow;
+            }
+            float underflow = plot_top - slots.front().y;
+            if (underflow > 0.0f) {
+                for (auto& s : slots) s.y += underflow;
+            }
+
+            for (const auto& s : slots) {
+                Vector2 sz = measure_font(g_font_ui, s.txt, s.size);
+                float x = right_edge ? label_right_x0 : (label_left_right - sz.x);
+                draw_font_text(g_font_ui, s.txt, {x, s.y}, s.size, s.col);
+            }
+        };
+
+        // Good zone ±10 (reference — Yousician-style target lane)
+        const float good_off = GOOD_ZONE_CENTS * scale_y;
+        DrawRectangle((int)trace_x0, (int)(mid_y - good_off), (int)(trace_x1 - trace_x0), (int)(good_off * 2.0f),
+                      with_alpha(GOOD_ZONE_COL, 0.10f));
+        DrawLineEx({trace_x0, mid_y - good_off}, {trace_x1, mid_y - good_off}, 1.2f, with_alpha(GOOD_ZONE_COL, 0.35f));
+        DrawLineEx({trace_x0, mid_y + good_off}, {trace_x1, mid_y + good_off}, 1.2f, with_alpha(GOOD_ZONE_COL, 0.35f));
+
+        // Active in-tune threshold (adjustable with - / =)
+        const float tune_off = g_in_tune_cents * scale_y;
+        DrawRectangle((int)trace_x0, (int)(mid_y - tune_off), (int)(trace_x1 - trace_x0), (int)(tune_off * 2.0f),
+                      with_alpha(TUNE_MARKER_COL, 0.14f));
+        DrawLineEx({trace_x0, mid_y - tune_off}, {trace_x1, mid_y - tune_off}, 2.0f, with_alpha(TUNE_MARKER_COL, 0.70f));
+        DrawLineEx({trace_x0, mid_y + tune_off}, {trace_x1, mid_y + tune_off}, 2.0f, with_alpha(TUNE_MARKER_COL, 0.70f));
+
+        DrawLineEx({trace_x0, mid_y}, {trace_x1, mid_y}, 1.4f, with_alpha(COL_IN_TUNE, 0.40f));
 
         draw_label_caps("CENTS DEVIATION", (int)(cents_rect_.x + 14), (int)(cents_rect_.y + 10), 33, with_alpha(TEXT_DIM, 0.65f));
-        draw_font_text(g_font_ui, "+25", {cents_rect_.x + 14, mid_y - scale_y * 25.0f - 14}, 36.0f, with_alpha(TEXT_DIM, 0.55f));
-        draw_font_text(g_font_ui, "0",   {cents_rect_.x + 14, mid_y - 14}, 36.0f, with_alpha(TEXT_DIM, 0.55f));
-        draw_font_text(g_font_ui, "-25", {cents_rect_.x + 14, mid_y + scale_y * 25.0f - 14}, 36.0f, with_alpha(TEXT_DIM, 0.55f));
+
+        // Scale ticks + labels (±25 on right edge to avoid gutter crowding)
+        draw_scale_tick(25.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
+        draw_scale_tick(10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
+        draw_scale_tick(0.0f, with_alpha(TEXT_BRIGHT, 0.45f));
+        draw_scale_tick(-10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
+        draw_scale_tick(-25.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
+
+        std::vector<CentsScaleLabel> scale_labels = {
+            {"+25", 25.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
+            {"+10", 10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
+            {"0", 0.0f, with_alpha(TEXT_BRIGHT, 0.80f), 24.0f, false},
+            {"-10", -10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
+            {"-25", -25.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
+        };
+        layout_scale_labels(scale_labels, false);
+        layout_scale_labels(scale_labels, true);
+
+        // Good-zone callout inside the band
+        {
+            const char* good_txt = "GOOD +/-10";
+            Vector2 gs = measure_font(g_font_ui, good_txt, 16.0f);
+            float gx = trace_x1 - gs.x - 12.0f;
+            float gy = mid_y - gs.y * 0.5f;
+            draw_font_text(g_font_ui, good_txt, {gx, gy}, 16.0f, with_alpha(GOOD_ZONE_COL, 0.70f));
+        }
+
+        // Adjustable in-tune threshold markers (gutter brackets + header label)
+        {
+            const float tune_y_top = cents_to_y(g_in_tune_cents);
+            const float tune_y_bot = cents_to_y(-g_in_tune_cents);
+            const float bracket_x = cents_rect_.x + STAFF_GUTTER_W + 2.0f;
+            Color tc = with_alpha(TUNE_MARKER_COL, 0.85f);
+            DrawLineEx({bracket_x, tune_y_top}, {bracket_x + 10.0f, tune_y_top}, 2.2f, tc);
+            DrawLineEx({bracket_x, tune_y_top}, {bracket_x, tune_y_top + 6.0f}, 2.2f, tc);
+            DrawLineEx({bracket_x, tune_y_bot}, {bracket_x + 10.0f, tune_y_bot}, 2.2f, tc);
+            DrawLineEx({bracket_x, tune_y_bot}, {bracket_x, tune_y_bot - 6.0f}, 2.2f, tc);
+
+            char tune_lbl[32];
+            std::snprintf(tune_lbl, sizeof(tune_lbl), "TUNE +/-%.0f  (-/=)", g_in_tune_cents);
+            Vector2 tl = measure_font(g_font_ui, tune_lbl, 18.0f);
+            draw_font_text(g_font_ui, tune_lbl,
+                           {trace_x1 - tl.x - 8.0f, cents_rect_.y + 12.0f}, 18.0f, with_alpha(TUNE_MARKER_COL, 0.9f));
+        }
+
+        char info_lbl[80];
+        std::snprintf(info_lbl, sizeof(info_lbl), "%s  |  Theme: %s  |  I to switch",
+                      g_inst->name, g_pal.name);
+        draw_font_text(g_font_ui, info_lbl,
+                       {cents_rect_.x + 14.0f, cents_rect_.y + 42.0f}, 16.0f, with_alpha(TEXT_DIM, 0.55f));
 
         const float sub_px = scroll_subpixel(usable);
         const float nx = beat_to_x(0.0f) - sub_px;
@@ -1544,16 +1923,16 @@ private:
     void draw_bottom_controls() {
         int sw = GetScreenWidth();
         int sh = GetScreenHeight();
-        float bar_y = sh - 72.0f;
+        float bar_y = sh - 100.0f;
 
-        DrawRectangleGradientV(0, (int)bar_y, sw, 72, with_alpha(HEADER_BOT, 0.9f), with_alpha(HEADER_TOP, 0.95f));
+        DrawRectangleGradientV(0, (int)bar_y, sw, 100, with_alpha(HEADER_BOT, 0.9f), with_alpha(HEADER_TOP, 0.95f));
         DrawRectangle(0, (int)bar_y, sw, 1, with_alpha(ACCENT_BLUE, 0.35f));
 
         int x = 40;
         auto btn = [&](const char* label, int w = 86) {
             Rectangle r = {(float)x, bar_y + 16, (float)w, 40};
             bool hot = CheckCollisionPointRec(GetMousePosition(), r);
-            Color bgc = hot ? with_alpha(ACCENT_BLUE, 0.35f) : with_alpha({0x08, 0x14, 0x30}, 0.8f);
+            Color bgc = hot ? with_alpha(ACCENT_BLUE, 0.35f) : with_alpha(PANEL_BG, 0.92f);
             Color border = hot ? NOW_LINE : with_alpha(PANEL_BORDER, 0.6f);
             draw_panel_frame(r, bgc, border, 6.0f);
             draw_font_text(g_font_ui, label, {r.x + 14, r.y + 11}, 15.0f, TEXT_BRIGHT);
@@ -1575,9 +1954,11 @@ private:
         const char* metro = metro_on_ ? "METRO ON" : "METRO OFF";
         if (btn(metro, 110)) metro_on_ = !metro_on_;
 
-        const char* hints = "[ ] BPM  ; ' window  M metro  SPACE pause  C clear  Q quit";
-        Vector2 hint_sz = measure_font(g_font_ui, hints, 12.0f);
-        draw_font_text(g_font_ui, hints, {(float)sw - hint_sz.x - 36, bar_y + 30}, 12.0f, with_alpha(TEXT_DIM, 0.55f));
+        const char* hints = paused_
+            ? "PAUSED — move mouse over trace to inspect pitch + cents   SPACE resume   Q quit"
+            : "[ ] BPM   ; ' window   - = tune   I instrument   T theme   SPACE pause   Q quit";
+        Vector2 hint_sz = measure_font(g_font_ui, hints, 36.0f);
+        draw_font_text(g_font_ui, hints, {(float)sw - hint_sz.x - 24, bar_y + 52}, 36.0f, with_alpha(TEXT_DIM, 0.60f));
     }
 
 };

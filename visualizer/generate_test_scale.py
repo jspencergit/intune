@@ -32,20 +32,39 @@ from pathlib import Path
 
 import numpy as np
 
-NOTES = [
-    "C3", "D3", "E3", "F3", "G3", "A3", "B3",
-    "C4", "D4", "E4", "F4", "G4", "A4", "B4",
-    "C5", "D5", "E5",
-]
-
-# Reproducible small intonation errors (cents) for the detuned variant.
-# Alternating sharp/flat, ±3..±12¢ — enough to see on the visualizer, not huge leaps.
-DETUNE_CENTS_BY_NOTE = {
-    "C3": +7.0,  "D3": -5.0,  "E3": +10.0, "F3": -6.0,  "G3": +8.0,
-    "A3": -9.0,  "B3": +4.0,  "C4": -7.0,  "D4": +11.0, "E4": -5.0,
-    "F4": +6.0,  "G4": -8.0,  "A4": +9.0,  "B4": -4.0,  "C5": +7.0,
-    "D5": -10.0, "E5": +5.0,
+SCALE_PRESETS: dict[str, dict] = {
+    "c-major": {
+        "title": "C major",
+        "notes": [
+            "C3", "D3", "E3", "F3", "G3", "A3", "B3",
+            "C4", "D4", "E4", "F4", "G4", "A4", "B4",
+            "C5", "D5", "E5",
+        ],
+        "detune_cents": {
+            "C3": +7.0,  "D3": -5.0,  "E3": +10.0, "F3": -6.0,  "G3": +8.0,
+            "A3": -9.0,  "B3": +4.0,  "C4": -7.0,  "D4": +11.0, "E4": -5.0,
+            "F4": +6.0,  "G4": -8.0,  "A4": +9.0,  "B4": -4.0,  "C5": +7.0,
+            "D5": -10.0, "E5": +5.0,
+        },
+    },
+    # Four sharps (F#, C#, G#, D#) — strong test for accidental detection.
+    "e-major": {
+        "title": "E major",
+        "notes": [
+            "E3", "F#3", "G#3", "A3", "B3", "C#4", "D#4",
+            "E4", "F#4", "G#4", "A4", "B4", "C#5", "D#5", "E5",
+        ],
+        "detune_cents": {
+            "E3": +8.0,  "F#3": -6.0, "G#3": +11.0, "A3": -5.0,  "B3": +9.0,
+            "C#4": -7.0, "D#4": +10.0, "E4": -4.0,  "F#4": +12.0, "G#4": -8.0,
+            "A4": +6.0,  "B4": -9.0,  "C#5": +7.0,  "D#5": -5.0,  "E5": +9.0,
+        },
+    },
 }
+
+# Default scale (backward compatible).
+NOTES = SCALE_PRESETS["c-major"]["notes"]
+DETUNE_CENTS_BY_NOTE = SCALE_PRESETS["c-major"]["detune_cents"]
 
 NOTE_TO_MIDI = {
     "C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5,
@@ -104,11 +123,19 @@ def gain_for_freq(freq: float) -> float:
     return float(np.clip(gain, min_gain, max_gain))
 
 
-def note_sequence(mode: str) -> list[str]:
+def active_scale(scale_key: str) -> dict:
+    if scale_key not in SCALE_PRESETS:
+        keys = ", ".join(sorted(SCALE_PRESETS))
+        raise ValueError(f"unknown scale {scale_key!r}; choose from: {keys}")
+    return SCALE_PRESETS[scale_key]
+
+
+def note_sequence(mode: str, notes: list[str] | None = None) -> list[str]:
+    seq = list(notes or NOTES)
     if mode == "up":
-        return list(NOTES)
+        return seq
     if mode == "updown":
-        return list(NOTES) + NOTES[-2::-1]  # C3..E5, then D5..C3
+        return seq + seq[-2::-1]
     raise ValueError(f"unknown mode: {mode}")
 
 
@@ -195,9 +222,13 @@ def build_scale(
     note_sec: float = NOTE_SEC,
     detune: bool = False,
     tone: str = "sine",
+    scale_key: str = "c-major",
 ) -> tuple[np.ndarray, list[tuple[str, float, float, float]]]:
     """Returns audio and metadata: (name, ideal_hz, actual_hz, start_sec)."""
-    sequence = note_sequence(mode)
+    scale = active_scale(scale_key)
+    notes = scale["notes"]
+    detune_map = scale["detune_cents"]
+    sequence = note_sequence(mode, notes)
     segments: list[np.ndarray] = []
     meta: list[tuple[str, float, float, float]] = []
     t0 = 0.0
@@ -205,7 +236,7 @@ def build_scale(
     for name in sequence:
         midi = note_name_to_midi(name)
         ideal = midi_to_freq(midi)
-        cents = DETUNE_CENTS_BY_NOTE.get(name, 0.0) if detune else 0.0
+        cents = detune_map.get(name, 0.0) if detune else 0.0
         actual = freq_with_cents(ideal, cents)
         segments.append(render_note(actual, note_sec, SR, tone=tone))
         meta.append((name, ideal, actual, t0))
@@ -252,11 +283,15 @@ def generate_one(
     detune: bool,
     wav_only: bool,
     tone: str = "sine",
+    scale_key: str = "c-major",
 ) -> None:
-    audio, meta = build_scale(mode=mode, note_sec=note_sec, detune=detune, tone=tone)
+    scale = active_scale(scale_key)
+    audio, meta = build_scale(
+        mode=mode, note_sec=note_sec, detune=detune, tone=tone, scale_key=scale_key
+    )
     tone_label = "viola-like" if tone == "viola" else "sine"
     label = (
-        f"Synthetic C-major ({mode}, {tone_label}"
+        f"Synthetic {scale['title']} ({mode}, {tone_label}"
         + (", detuned" if detune else ", perfect")
         + ")"
     )
@@ -279,6 +314,12 @@ def main() -> None:
     parser.add_argument("--note-sec", type=float, default=NOTE_SEC)
     parser.add_argument("--detune", action="store_true", help="Apply small per-note pitch errors")
     parser.add_argument("--tone", choices=("sine", "viola"), default="sine")
+    parser.add_argument(
+        "--scale",
+        choices=tuple(SCALE_PRESETS.keys()),
+        default="c-major",
+        help="Scale preset (e-major = 4 sharps, good accidental test)",
+    )
     parser.add_argument("--wav-only", action="store_true")
     parser.add_argument(
         "--all",
@@ -311,6 +352,7 @@ def main() -> None:
             generate_one(path, mode, args.note_sec, detune, args.wav_only, tone="viola")
         return
 
+    scale_slug = args.scale.replace("-", "_")
     if args.output is None:
         if args.tone == "viola":
             suffix = "updown_viola_detuned" if args.detune else (
@@ -320,9 +362,12 @@ def main() -> None:
             suffix = "updown_detuned" if args.detune else (
                 "updown_perfect" if args.mode == "updown" else "perfect"
             )
-        args.output = TEST_AUDIO / f"synthetic_C_major_scale_{suffix}.mp3"
+        args.output = TEST_AUDIO / f"synthetic_{scale_slug}_scale_{suffix}.mp3"
 
-    generate_one(args.output, args.mode, args.note_sec, args.detune, args.wav_only, tone=args.tone)
+    generate_one(
+        args.output, args.mode, args.note_sec, args.detune, args.wav_only,
+        tone=args.tone, scale_key=args.scale,
+    )
 
 
 if __name__ == "__main__":

@@ -117,6 +117,20 @@ A4,-1.8
 
 It looks for a plausible note token + numeric cents value. `---` = rest/silence. Constant rate output from the device is ideal (the firmware already does ~40 Hz including rests).
 
+## Download & packaging (Windows)
+
+Pre-built releases are hosted at **[analogintuition.com/intune](https://analogintuition.com/intune/)**.
+
+To rebuild the ZIP locally and copy it to the website repo:
+
+```powershell
+.\package.ps1 -CopyToWebsite
+```
+
+This stages `intune_viz.exe` + `raylib.dll` + `glfw3.dll` + `README.txt`, zips as `dist/Intune-Visualizer-win64-v0.2.0.zip`, and copies to `analogintuition-com/intune/downloads/`. Commit and push that repo to publish on Netlify.
+
+Optional: compile `installer/intune-viz.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) for a classic `.exe` installer.
+
 ## Future polish ideas (pull requests welcome)
 
 - Real alto-clef vector font / embedded Bravura subset or SVG path
