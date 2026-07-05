@@ -15,6 +15,8 @@
 //   M              Toggle metronome click
 //   T              Cycle color theme preset
 //   I              Cycle instrument (Viola / Cello / Violin)
+//   V              Toggle Staff view / Cents focus (default)
+//   G              Toggle beat & measure grid
 //   - =            In-tune threshold down / up (¢)
 //   C              Clear
 //   Q / Esc        Quit
@@ -233,7 +235,10 @@ static void apply_theme(int idx) {
 constexpr float TRACE_CORE_WIDTH = 2.4f;
 constexpr int   HUD_HEIGHT       = 96;
 constexpr float STAFF_GUTTER_W   = 88.0f;  // fixed left column for clef + labels
-constexpr float CENTS_RIBBON_H   = 228.0f; // 50% taller than original 152
+constexpr float CENTS_RIBBON_H   = 228.0f; // staff mode: cents ribbon height
+constexpr float BOTTOM_BAR_H     = 100.0f;
+constexpr float CENTS_SCALE_STAFF  = 25.0f;
+constexpr float CENTS_SCALE_FOCUS  = 50.0f;
 
 // Simple square-wave generator for the metronome (raylib 6+ does not provide GenWaveSquare in the public API).
 static Wave GenWaveSquare(float frequency, float durationSeconds, int sampleRate)
@@ -951,7 +956,9 @@ public:
             ClearBackground(BG);
 
             draw_hud();
-            draw_staff_view();
+            if (display_mode_ == DisplayMode::Staff) {
+                draw_staff_view();
+            }
             draw_cents_ribbon();
             draw_inspection_overlay();
             draw_bottom_controls();
@@ -1010,6 +1017,10 @@ private:
     Sound click_sound_{0};
     Sound accent_sound_{0};
 
+    enum class DisplayMode { Staff, CentsFocus };
+    DisplayMode display_mode_ = DisplayMode::CentsFocus;
+    bool show_measures_ = true;
+
     // Inspection (paused hover)
     bool  inspect_active_ = false;
     float inspect_x_ = 0.0f;
@@ -1028,11 +1039,65 @@ private:
     float trace_screen_playhead_y_ = 0.0f;
     float trace_screen_target_y_ = 0.0f;
 
+    bool cents_focus() const { return display_mode_ == DisplayMode::CentsFocus; }
+    float cents_scale_max() const { return cents_focus() ? CENTS_SCALE_FOCUS : CENTS_SCALE_STAFF; }
+
+    bool get_latest_sample(PitchSample& out) const {
+        for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
+            if (it->teensy_ts > 0.0f) { out = *it; return true; }
+        }
+        return false;
+    }
+
+    void draw_measure_grid(float trace_x0, float trace_x1, float grid_top, float grid_bot,
+                           float label_y, bool draw_beat_numbers) {
+        if (!show_measures_) return;
+
+        float beat_now = (scroll_now_ts() / 1000.0f) * (bpm_ / 60.0f);
+        int first_beat = (int)std::floor(beat_now - beats_visible_);
+        int last_beat  = (int)std::ceil(beat_now + 0.6f);
+        float left_beat = -beats_visible_;
+        float right_beat = 0.28f;
+        float usable = trace_x1 - trace_x0;
+        auto beat_to_x = [&](float bx) {
+            return trace_x0 + (bx - left_beat) / (right_beat - left_beat) * usable;
+        };
+        const float sub_px = scroll_subpixel(usable);
+
+        for (int b = first_beat; b <= last_beat; ++b) {
+            float bx = (float)b - beat_now;
+            float sx = beat_to_x(bx) - sub_px;
+
+            int beat_in_bar = b % 4;
+            if (beat_in_bar < 0) beat_in_bar += 4;
+            bool is_bar = (beat_in_bar == 0);
+
+            float dist_to_now = std::fabs((float)b - beat_now);
+            float pulse = 1.0f + 0.35f * std::exp(-dist_to_now * 2.0f);
+
+            Color line_col = is_bar ? BAR_GRID_COL : BEAT_GRID_COL;
+            float alpha = (is_bar ? 0.78f : 0.48f) * pulse;
+            float w = is_bar ? 2.6f : 1.3f;
+
+            DrawLineEx({sx, grid_top}, {sx, grid_bot}, w, with_alpha(line_col, alpha));
+
+            if (draw_beat_numbers) {
+                char beat_lbl[4];
+                std::snprintf(beat_lbl, sizeof(beat_lbl), "%d", beat_in_bar + 1);
+                float lbl_sz = is_bar ? 42.0f : 36.0f;
+                Color lbl_col = is_bar ? COL_IN_TUNE : with_alpha(TEXT_BRIGHT, 0.72f);
+                Vector2 lw = measure_font(g_font_label, beat_lbl, lbl_sz);
+                draw_font_text(g_font_label, beat_lbl, {sx - lw.x * 0.5f, label_y}, lbl_sz, lbl_col);
+            }
+        }
+    }
+
     void update_window_title() {
         const char* clef_name = (g_inst->clef == ClefKind::Alto) ? "Alto" :
                                 (g_inst->clef == ClefKind::Bass) ? "Bass" : "Treble";
         char title[96];
-        std::snprintf(title, sizeof(title), "Intune — %s (%s Clef)", g_inst->name, clef_name);
+        const char* view = cents_focus() ? "Cents" : "Staff";
+        std::snprintf(title, sizeof(title), "Intune — %s (%s) [%s]", g_inst->name, clef_name, view);
         SetWindowTitle(title);
     }
 
@@ -1167,6 +1232,15 @@ private:
                    pitch_y_to_note(g_staff_pitch_min).c_str(),
                    pitch_y_to_note(g_staff_pitch_max).c_str());
         }
+        if (IsKeyPressed(KEY_V)) {
+            display_mode_ = cents_focus() ? DisplayMode::Staff : DisplayMode::CentsFocus;
+            update_window_title();
+            printf("[view] %s\n", cents_focus() ? "Cents focus (+/-50)" : "Staff + cents");
+        }
+        if (IsKeyPressed(KEY_G)) {
+            show_measures_ = !show_measures_;
+            printf("[grid] measures %s\n", show_measures_ ? "on" : "off");
+        }
         if (IsKeyPressed(KEY_MINUS)) {
             g_in_tune_cents = std::max(2.0f, g_in_tune_cents - 1.0f);
             tune_hold_timer_ = 0.4f;
@@ -1195,13 +1269,13 @@ private:
         if (IsKeyPressed(KEY_SEMICOLON)) beats_visible_ = std::max(1.5f, beats_visible_ - 0.25f);
         if (IsKeyPressed(KEY_APOSTROPHE)) beats_visible_ = std::min(16.0f, beats_visible_ + 0.25f);
 
-        // Paused: hover anywhere on the trace (staff + cents) to inspect
+        // Paused: hover on trace area to inspect
         if (paused_) {
             Vector2 m = GetMousePosition();
             Rectangle inspect_rect = {
-                trace_x0_, staff_rect_.y,
+                trace_x0_, cents_rect_.y,
                 trace_x1_ - trace_x0_,
-                (cents_rect_.y + cents_rect_.height) - staff_rect_.y
+                cents_rect_.height
             };
             if (CheckCollisionPointRec(m, inspect_rect)) {
                 inspect_x_ = std::clamp(m.x, trace_x0_, trace_x1_);
@@ -1349,11 +1423,22 @@ private:
 
     void update_layout() {
         int sw = GetScreenWidth();
-        staff_rect_ = {36.0f, (float)HUD_HEIGHT + 14.0f, (float)sw - 72.0f, 508.0f};
-        staff_y_scale_ = staff_rect_.height / (g_staff_pitch_max - g_staff_pitch_min + 0.6f);
-        cents_rect_ = {36.0f, staff_rect_.y + staff_rect_.height + 12.0f, (float)sw - 72.0f, CENTS_RIBBON_H};
-        trace_x0_ = staff_rect_.x + STAFF_GUTTER_W + 10.0f;
-        trace_x1_ = staff_rect_.x + staff_rect_.width - 14.0f;
+        int sh = GetScreenHeight();
+        const float panel_x = 36.0f;
+        const float panel_w = (float)sw - 72.0f;
+        const float content_top = (float)HUD_HEIGHT + 14.0f;
+
+        if (cents_focus()) {
+            staff_rect_ = {0.0f, 0.0f, 0.0f, 0.0f};
+            const float cents_h = (float)sh - content_top - BOTTOM_BAR_H - 26.0f;
+            cents_rect_ = {panel_x, content_top, panel_w, std::max(200.0f, cents_h)};
+        } else {
+            staff_rect_ = {panel_x, content_top, panel_w, 508.0f};
+            staff_y_scale_ = staff_rect_.height / (g_staff_pitch_max - g_staff_pitch_min + 0.6f);
+            cents_rect_ = {panel_x, staff_rect_.y + staff_rect_.height + 12.0f, panel_w, CENTS_RIBBON_H};
+        }
+        trace_x0_ = cents_rect_.x + STAFF_GUTTER_W + 10.0f;
+        trace_x1_ = cents_rect_.x + cents_rect_.width - 14.0f;
     }
 
     bool pick_inspect_sample(float screen_x) {
@@ -1393,34 +1478,34 @@ private:
     void draw_inspection_overlay() {
         if (!paused_ || !inspect_active_) return;
 
-        const float staff_top = staff_rect_.y + 4.0f;
-        const float staff_bot = staff_rect_.y + staff_rect_.height - 4.0f;
-        const float cents_top = cents_rect_.y + 28.0f;
-        const float cents_bot = cents_rect_.y + cents_rect_.height - 10.0f;
+        const float overlay_top = cents_rect_.y + 28.0f;
+        const float overlay_bot = cents_rect_.y + cents_rect_.height - 10.0f;
+        const float title_sz = cents_focus() ? 28.0f : 33.0f;
+        const float info_y = cents_rect_.y + 10.0f + title_sz + 6.0f;
+        const float note_block_y = info_y + 18.0f;
+        const float plot_top = cents_focus() ? (note_block_y + 92.0f) : (cents_rect_.y + 62.0f);
+        const float plot_bot = cents_rect_.y + cents_rect_.height - 22.0f;
+        const float mid_y = (plot_top + plot_bot) * 0.5f;
+        const float scale_y = (plot_bot - plot_top) * 0.5f / cents_scale_max();
 
         const bool is_rest = (inspect_sample_.note == "---" || inspect_sample_.note == "REST");
         Color accent = is_rest ? COL_REST : get_color(inspect_sample_.cents);
 
-        // Vertical scrub line through staff + cents
-        DrawLineEx({inspect_x_, staff_top}, {inspect_x_, cents_bot}, 2.2f, with_alpha(ACCENT_BLUE, 0.85f));
-        DrawLineEx({inspect_x_, staff_top}, {inspect_x_, cents_bot}, 5.0f, with_alpha(ACCENT_BLUE, 0.12f));
+        DrawLineEx({inspect_x_, overlay_top}, {inspect_x_, overlay_bot}, 2.2f, with_alpha(ACCENT_BLUE, 0.85f));
+        DrawLineEx({inspect_x_, overlay_top}, {inspect_x_, overlay_bot}, 5.0f, with_alpha(ACCENT_BLUE, 0.12f));
 
         if (!is_rest) {
-            float pitch_y = staff_pitch_to_screen_y(inspect_sample_.y_pos, staff_rect_.y, staff_y_scale_);
-            DrawLineEx({trace_x0_, pitch_y}, {trace_x1_, pitch_y}, 1.2f, with_alpha(accent, 0.45f));
-            DrawCircleV({inspect_x_, pitch_y}, 9.0f, with_alpha(accent, 0.18f));
-            DrawCircleV({inspect_x_, pitch_y}, 5.0f, accent);
-
-            const float plot_top = cents_rect_.y + 62.0f;
-            const float plot_bot = cents_rect_.y + cents_rect_.height - 22.0f;
-            const float mid_y = (plot_top + plot_bot) * 0.5f;
-            const float scale_y = (plot_bot - plot_top) * 0.5f / 25.0f;
+            if (!cents_focus()) {
+                float pitch_y = staff_pitch_to_screen_y(inspect_sample_.y_pos, staff_rect_.y, staff_y_scale_);
+                DrawLineEx({trace_x0_, pitch_y}, {trace_x1_, pitch_y}, 1.2f, with_alpha(accent, 0.45f));
+                DrawCircleV({inspect_x_, pitch_y}, 9.0f, with_alpha(accent, 0.18f));
+                DrawCircleV({inspect_x_, pitch_y}, 5.0f, accent);
+            }
             float cents_y = mid_y - inspect_sample_.cents * scale_y;
-            DrawCircleV({inspect_x_, cents_y}, 7.0f, with_alpha(accent, 0.20f));
-            DrawCircleV({inspect_x_, cents_y}, 4.0f, accent);
+            DrawCircleV({inspect_x_, cents_y}, 9.0f, with_alpha(accent, 0.20f));
+            DrawCircleV({inspect_x_, cents_y}, 5.0f, accent);
         }
 
-        // Readout card
         char note_line[32];
         char cents_line[48];
         if (is_rest) {
@@ -1434,7 +1519,7 @@ private:
                           inspect_sample_.cents, qual);
         }
 
-        const float note_sz = 28.0f;
+        const float note_sz = cents_focus() ? 32.0f : 28.0f;
         const float cents_sz = 17.0f;
         Vector2 note_szv = measure_font(g_font_ui, note_line, note_sz);
         Vector2 cents_szv = is_rest ? Vector2{0, 0} : measure_font(g_font_ui, cents_line, cents_sz);
@@ -1442,7 +1527,7 @@ private:
         float card_h = is_rest ? 44.0f : 72.0f;
 
         float card_x = inspect_x_ + 16.0f;
-        float card_y = staff_top + 12.0f;
+        float card_y = overlay_top + 8.0f;
         if (card_x + card_w > trace_x1_ - 8.0f) {
             card_x = inspect_x_ - card_w - 16.0f;
         }
@@ -1489,17 +1574,21 @@ private:
             }
         }
 
-        // Note readout card (left)
-        Rectangle note_card = {32.0f, 14.0f, 220.0f, 68.0f};
+        // Note readout card (left) — larger in cents-focus mode
+        const float note_size = cents_focus() ? 58.0f : 46.0f;
+        const float cents_hud_sz = cents_focus() ? 22.0f : 15.0f;
+        Rectangle note_card = cents_focus()
+            ? Rectangle{28.0f, 8.0f, 300.0f, 80.0f}
+            : Rectangle{32.0f, 14.0f, 220.0f, 68.0f};
         Color card_border = have && note_txt != "REST" ? with_alpha(main_col, 0.55f) : with_alpha(PANEL_BORDER, 0.7f);
         draw_panel_frame(note_card, with_alpha(PANEL_BG, 0.92f), card_border, 8.0f);
 
-        float note_size = 46.0f;
-        draw_font_text(g_font_ui, note_txt.c_str(), {note_card.x + 18, note_card.y + 10}, note_size, main_col);
+        draw_font_text(g_font_ui, note_txt.c_str(), {note_card.x + 18, note_card.y + 8}, note_size, main_col);
         if (!cents_txt.empty()) {
             char cents_line[48];
             std::snprintf(cents_line, sizeof(cents_line), "%s cents", cents_txt.c_str());
-            draw_font_text(g_font_ui, cents_line, {note_card.x + 18, note_card.y + 46}, 15.0f, with_alpha(TEXT_DIM, 0.9f));
+            draw_font_text(g_font_ui, cents_line, {note_card.x + 18, note_card.y + (cents_focus() ? 58.0f : 46.0f)},
+                           cents_hud_sz, with_alpha(TEXT_DIM, 0.9f));
         }
 
         // Connection status (center)
@@ -1602,42 +1691,10 @@ private:
                        14.0f, with_alpha(TEXT_DIM, 0.8f));
         draw_label_caps("PITCH TRACE", (int)trace_x0, (int)(staff_rect_.y + 52), 33, with_alpha(TEXT_DIM, 0.55f));
 
-        // Beat / measure grid (behind trace)
-        {
-            float beat_now = (scroll_now_ts() / 1000.0f) * (bpm_ / 60.0f);
-            int first_beat = (int)std::floor(beat_now - beats_visible_);
-            int last_beat  = (int)std::ceil(beat_now + 0.6f);
-            float grid_top = staff_rect_.y + 54.0f;
-            float grid_bot = staff_rect_.y + staff_rect_.height - 10.0f;
-
-            for (int b = first_beat; b <= last_beat; ++b) {
-                float bx = (float)b - beat_now;
-                float sx = beat_to_screen(bx);
-
-                int beat_in_bar = b % 4;
-                if (beat_in_bar < 0) beat_in_bar += 4;
-                bool is_bar = (beat_in_bar == 0);
-
-                float dist_to_now = std::fabs((float)b - beat_now);
-                float pulse = 1.0f + 0.35f * std::exp(-dist_to_now * 2.0f);
-
-                Color line_col = is_bar ? BAR_GRID_COL : BEAT_GRID_COL;
-                float alpha = (is_bar ? 0.78f : 0.48f) * pulse;
-                float w = is_bar ? 2.6f : 1.3f;
-
-                DrawLineEx({sx, grid_top}, {sx, grid_bot}, w, with_alpha(line_col, alpha));
-
-                char beat_lbl[4];
-                std::snprintf(beat_lbl, sizeof(beat_lbl), "%d", beat_in_bar + 1);
-                float lbl_sz = is_bar ? 42.0f : 36.0f;
-                Color lbl_col = is_bar ? COL_IN_TUNE : with_alpha(TEXT_BRIGHT, 0.72f);
-                Vector2 lw = measure_font(g_font_label, beat_lbl, lbl_sz);
-                draw_font_text(g_font_label, beat_lbl, {sx - lw.x * 0.5f, staff_rect_.y + 6.0f}, lbl_sz, lbl_col);
-            }
-        }
-
         const float grid_top = staff_rect_.y + 54.0f;
         const float grid_bot = staff_rect_.y + staff_rect_.height - 10.0f;
+        draw_measure_grid(trace_x0, trace_x1, grid_top, grid_bot, staff_rect_.y + 6.0f, true);
+
         const float sub_px = scroll_subpixel(usable_width);
 
         update_playhead_smooth(frame_dt_);
@@ -1733,10 +1790,18 @@ private:
             return trace_x0 + (b - left_beat) / (right_beat - left_beat) * usable;
         };
 
-        const float plot_top = cents_rect_.y + 62.0f;
+        const float scale_max = cents_scale_max();
+        const float panel_y = cents_rect_.y;
+        const float title_y = panel_y + 10.0f;
+        const float title_sz = cents_focus() ? 28.0f : 33.0f;
+        const float info_y = panel_y + 10.0f + title_sz + 6.0f;
+        const float note_block_y = info_y + 18.0f;
+        const float plot_top = cents_focus() ? (note_block_y + 92.0f) : (panel_y + 62.0f);
         const float plot_bot = cents_rect_.y + cents_rect_.height - 22.0f;
         const float mid_y = (plot_top + plot_bot) * 0.5f;
-        const float scale_y = (plot_bot - plot_top) * 0.5f / 25.0f;
+        const float scale_y = (plot_bot - plot_top) * 0.5f / scale_max;
+        const float trace_core_w = cents_focus() ? 5.0f : 1.4f;
+        const float trace_glow_w = trace_core_w + (cents_focus() ? 5.0f : 1.6f);
         const float label_left_right = cents_rect_.x + STAFF_GUTTER_W - 10.0f;
         const float label_right_x0 = trace_x1 + 6.0f;
 
@@ -1805,22 +1870,63 @@ private:
 
         DrawLineEx({trace_x0, mid_y}, {trace_x1, mid_y}, 1.4f, with_alpha(COL_IN_TUNE, 0.40f));
 
-        draw_label_caps("CENTS DEVIATION", (int)(cents_rect_.x + 14), (int)(cents_rect_.y + 10), 33, with_alpha(TEXT_DIM, 0.65f));
+        if (cents_focus()) {
+            draw_label_caps("CENTS FOCUS", (int)(cents_rect_.x + 14), (int)title_y, (int)title_sz,
+                            with_alpha(TEXT_DIM, 0.65f));
+            PitchSample live{};
+            if (get_latest_sample(live)) {
+                std::string live_note = (live.note == "---") ? "REST" : live.note;
+                Color live_col = (live.note == "---") ? TEXT_DIM : get_color(live.cents);
+                const float big_note = 88.0f;
+                Vector2 nw = measure_font(g_font_ui, live_note.c_str(), big_note);
+                float nx = trace_x0 + (trace_x1 - trace_x0) * 0.5f - nw.x * 0.5f;
+                draw_font_text(g_font_ui, live_note.c_str(), {nx, note_block_y}, big_note, live_col);
+                if (live.note != "---") {
+                    char cl[32];
+                    std::snprintf(cl, sizeof(cl), "%+.1f cents", live.cents);
+                    Vector2 cw = measure_font(g_font_ui, cl, 26.0f);
+                    float cx = trace_x0 + (trace_x1 - trace_x0) * 0.5f - cw.x * 0.5f;
+                    draw_font_text(g_font_ui, cl, {cx, note_block_y + nw.y + 2.0f}, 26.0f,
+                                   with_alpha(live_col, 0.85f));
+                }
+            }
+        } else {
+            draw_label_caps("CENTS DEVIATION", (int)(cents_rect_.x + 14), (int)title_y, (int)title_sz,
+                            with_alpha(TEXT_DIM, 0.65f));
+        }
 
-        // Scale ticks + labels (±25 on right edge to avoid gutter crowding)
-        draw_scale_tick(25.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
-        draw_scale_tick(10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
-        draw_scale_tick(0.0f, with_alpha(TEXT_BRIGHT, 0.45f));
-        draw_scale_tick(-10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
-        draw_scale_tick(-25.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
-
-        std::vector<CentsScaleLabel> scale_labels = {
-            {"+25", 25.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
-            {"+10", 10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
-            {"0", 0.0f, with_alpha(TEXT_BRIGHT, 0.80f), 24.0f, false},
-            {"-10", -10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
-            {"-25", -25.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
-        };
+        std::vector<CentsScaleLabel> scale_labels;
+        if (cents_focus()) {
+            draw_scale_tick(50.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
+            draw_scale_tick(25.0f, with_alpha(TEXT_DIM, 0.40f));
+            draw_scale_tick(10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
+            draw_scale_tick(0.0f, with_alpha(TEXT_BRIGHT, 0.45f));
+            draw_scale_tick(-10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
+            draw_scale_tick(-25.0f, with_alpha(TEXT_DIM, 0.40f));
+            draw_scale_tick(-50.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
+            scale_labels = {
+                {"+50", 50.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
+                {"+25", 25.0f, with_alpha(TEXT_DIM, 0.50f), 18.0f, true},
+                {"+10", 10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
+                {"0", 0.0f, with_alpha(TEXT_BRIGHT, 0.80f), 24.0f, false},
+                {"-10", -10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
+                {"-25", -25.0f, with_alpha(TEXT_DIM, 0.50f), 18.0f, true},
+                {"-50", -50.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
+            };
+        } else {
+            draw_scale_tick(25.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
+            draw_scale_tick(10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
+            draw_scale_tick(0.0f, with_alpha(TEXT_BRIGHT, 0.45f));
+            draw_scale_tick(-10.0f, with_alpha(GOOD_ZONE_COL, 0.55f));
+            draw_scale_tick(-25.0f, with_alpha(TEXT_DIM, 0.35f), 10.0f);
+            scale_labels = {
+                {"+25", 25.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
+                {"+10", 10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
+                {"0", 0.0f, with_alpha(TEXT_BRIGHT, 0.80f), 24.0f, false},
+                {"-10", -10.0f, with_alpha(GOOD_ZONE_COL, 0.90f), 24.0f, false},
+                {"-25", -25.0f, with_alpha(TEXT_DIM, 0.55f), 20.0f, true},
+            };
+        }
         layout_scale_labels(scale_labels, false);
         layout_scale_labels(scale_labels, true);
 
@@ -1848,14 +1954,17 @@ private:
             std::snprintf(tune_lbl, sizeof(tune_lbl), "TUNE +/-%.0f  (-/=)", g_in_tune_cents);
             Vector2 tl = measure_font(g_font_ui, tune_lbl, 18.0f);
             draw_font_text(g_font_ui, tune_lbl,
-                           {trace_x1 - tl.x - 8.0f, cents_rect_.y + 12.0f}, 18.0f, with_alpha(TUNE_MARKER_COL, 0.9f));
+                           {trace_x1 - tl.x - 8.0f, title_y + 2.0f}, 18.0f, with_alpha(TUNE_MARKER_COL, 0.9f));
         }
 
-        char info_lbl[80];
-        std::snprintf(info_lbl, sizeof(info_lbl), "%s  |  Theme: %s  |  I to switch",
-                      g_inst->name, g_pal.name);
+        char info_lbl[96];
+        std::snprintf(info_lbl, sizeof(info_lbl), "%s  |  +/-%.0f  |  V view  |  G grid %s",
+                      g_inst->name, scale_max, show_measures_ ? "on" : "off");
         draw_font_text(g_font_ui, info_lbl,
-                       {cents_rect_.x + 14.0f, cents_rect_.y + 42.0f}, 16.0f, with_alpha(TEXT_DIM, 0.55f));
+                       {cents_rect_.x + 14.0f, info_y},
+                       16.0f, with_alpha(TEXT_DIM, 0.55f));
+
+        draw_measure_grid(trace_x0, trace_x1, plot_top, plot_bot, plot_top - 18.0f, cents_focus());
 
         const float sub_px = scroll_subpixel(usable);
         const float nx = beat_to_x(0.0f) - sub_px;
@@ -1910,9 +2019,9 @@ private:
             if (cvis.size() >= 2) {
                 for (size_t i = 0; i + 1 < cvis.size(); ++i) {
                     DrawLineEx({cvis[i].x, cvis[i].y}, {cvis[i+1].x, cvis[i+1].y},
-                               1.6f, with_alpha(cvis[i].c, 0.16f));
+                               trace_glow_w, with_alpha(cvis[i].c, cents_focus() ? 0.22f : 0.16f));
                     DrawLineEx({cvis[i].x, cvis[i].y}, {cvis[i+1].x, cvis[i+1].y},
-                               1.4f, with_alpha(cvis[i].c, 0.92f));
+                               trace_core_w, with_alpha(cvis[i].c, 0.94f));
                 }
             }
         }
@@ -1955,8 +2064,8 @@ private:
         if (btn(metro, 110)) metro_on_ = !metro_on_;
 
         const char* hints = paused_
-            ? "PAUSED — move mouse over trace to inspect pitch + cents   SPACE resume   Q quit"
-            : "[ ] BPM   ; ' window   - = tune   I instrument   T theme   SPACE pause   Q quit";
+            ? "PAUSED — hover trace to inspect   SPACE resume   Q quit"
+            : "V view   G grid   - = tune   I instrument   [ ] BPM   SPACE pause   Q quit";
         Vector2 hint_sz = measure_font(g_font_ui, hints, 36.0f);
         draw_font_text(g_font_ui, hints, {(float)sw - hint_sz.x - 24, bar_y + 52}, 36.0f, with_alpha(TEXT_DIM, 0.60f));
     }
