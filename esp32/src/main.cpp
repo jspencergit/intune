@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include <math.h>
 
-// Teensy-compatible CSV stream for visualizer bring-up (USB serial monitor / PC viz).
+#include "ble_uart.h"
+
+// Teensy-compatible CSV stream for visualizer bring-up (USB serial + BLE UART).
 //   timestamp_ms,Note,Cents,probability,level
 //
 // Plays C major up + down with the same per-note detune map as generate_test_scale.py.
@@ -9,13 +11,13 @@
 constexpr uint32_t OUTPUT_INTERVAL_US = 8333;  // 120 Hz — matches Teensy + visualizer
 constexpr uint32_t NOTE_HOLD_MS = 1000;
 constexpr uint32_t REST_MS = 180;
+constexpr size_t LINE_BUF_LEN = 96;
 
 struct ScaleEntry {
     const char* note;
     float detune_cents;
 };
 
-// C major viola range, slightly detuned (c-major preset from generate_test_scale.py).
 static const ScaleEntry kScaleUp[] = {
     {"C3", +7.0f},  {"D3", -5.0f},  {"E3", +10.0f}, {"F3", -6.0f},  {"G3", +8.0f},
     {"A3", -9.0f},  {"B3", +4.0f},  {"C4", -7.0f},  {"D4", +11.0f}, {"E4", -5.0f},
@@ -92,26 +94,34 @@ static void tick_phase(uint32_t dt_ms) {
     }
 }
 
+static void emit_line(const char* line) {
+    Serial.print(line);
+    ble_uart_notify_line(line, strlen(line));
+}
+
 static void emit_sample(uint32_t ts_ms) {
+    char line[LINE_BUF_LEN];
     vibrato_phase_ += 0.11f;
-    const float vibrato = sinf(vibrato_phase_) * 1.5f;  // subtle motion on top of detune
+    const float vibrato = sinf(vibrato_phase_) * 1.5f;
 
     if (phase_ == Phase::Note && phase_note_ != nullptr) {
         const float cents = phase_cents_ + vibrato;
-        const float prob = 0.90f;
-        const float level = 0.022f;
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n",
-                      (unsigned long)ts_ms, phase_note_->note, cents, prob, level);
+        snprintf(line, sizeof(line), "%lu,%s,%+.1f,%.2f,%.3f\n",
+                 (unsigned long)ts_ms, phase_note_->note, cents, 0.90f, 0.022f);
     } else {
-        Serial.printf("%lu,---,0,0.00,%.3f\n", (unsigned long)ts_ms, 0.0003f);
+        snprintf(line, sizeof(line), "%lu,---,0,0.00,%.3f\n",
+                 (unsigned long)ts_ms, 0.0003f);
     }
+    emit_line(line);
 }
 
 void setup() {
     Serial.begin(115200);
     delay(800);
+    ble_uart_begin("Intune");
     Serial.println();
-    Serial.println("=== Intune ESP32 scale simulator ===");
+    Serial.println("=== Intune ESP32 scale simulator + BLE UART ===");
+    Serial.println("BLE name: Intune  (Nordic UART Service)");
     Serial.println("C major up/down, slightly detuned @ 120 Hz");
     Serial.println("Format: timestamp_ms,Note,Cents,probability,level");
     begin_rest();

@@ -36,6 +36,28 @@ visualizer_raylib/dist/
 visualizer_raylib/*.exe
 visualizer_raylib/*.pdb
 
+# ESP32 / PlatformIO (esp32/ — root .pio/ above also applies)
+esp32/.pio/
+
+# Android / Gradle (see also android/.gitignore)
+android/.gradle/
+android/.idea/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/**/*.apk
+android/**/*.aab
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+
+# iOS / Xcode (see also ios/.gitignore)
+ios/**/DerivedData/
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/**/build/
+ios/**/.swiftpm/
+
 # Cursor / agent tooling (local only — not project source)
 mcps/
 terminals/
