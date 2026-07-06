@@ -19,12 +19,24 @@ Green = in tune · Red = sharp · Blue = flat
 
 ## Architecture
 
+**PC (primary today)**
+
 ```
 Teensy 4.1 + I²S mic  ──serial CSV @ 230400──►  PC visualizer (intune_viz.exe)
                                                       │
                                                       ├─ --simulate  (no hardware)
                                                       └─ --port COM3   (live pitch)
 ```
+
+**Mobile (Android + ESP32 BLE bridge)**
+
+```
+Teensy 4.1 + I²S mic  ──UART──►  ESP32  ──BLE Nordic UART──►  Android app
+                                      │
+                                      └─ canned scale simulator (dev / no Teensy)
+```
+
+Android app: **Cents Focus** trace, pause + finger scrub, scroll speed, adjustable in-tune zone. See [`android/README.md`](android/README.md).
 
 Serial line format: `timestamp,Note,cents,confidence,level`  
 Example: `12345,F#4,+6.2,0.91,0.42` · Rests: `---`
@@ -85,7 +97,10 @@ cd visualizer_raylib\build\Release
 | Path | Description |
 |------|-------------|
 | `teensy/` | Teensy 4.1 firmware (PlatformIO) — YIN pitch, 120 Hz output |
-| `visualizer_raylib/` | **Primary visualizer** — C++ / raylib, GPU-accelerated |
+| `visualizer_raylib/` | **Primary PC visualizer** — C++ / raylib, GPU-accelerated |
+| `esp32/` | ESP32 BLE UART bridge + scale simulator (PlatformIO / NimBLE) |
+| `android/` | **Intune Stream** — Kotlin / Compose cents visualizer over BLE |
+| `ios/` | iOS BLE scaffold (requires Mac / Xcode to build) |
 | `visualizer/` | Legacy Python visualizer (PyQt5 + pyqtgraph) |
 | `test_audio/` | Synthetic test scales (gitignored) — see `visualizer/generate_test_scale.py` |
 | `design.md` | Architecture and algorithm notes |
@@ -111,6 +126,23 @@ pio run -t upload
 
 Reflash after firmware changes. If the visualizer cannot connect, close Serial Monitor and other apps using the COM port.
 
+## ESP32 BLE bridge
+
+```bash
+cd esp32
+pio run -t upload
+```
+
+After flashing, **power-cycle** the ESP32 so BLE advertising is reliable. Device name: **Intune**. Close PlatformIO serial monitor before upload if the port is busy.
+
+Current firmware streams a detuned C-major test scale at 120 Hz (same CSV format as Teensy). Future: forward live Teensy UART over BLE without replacing the PC path.
+
+## Android app
+
+Open `android/` in Android Studio, sync Gradle, run on a BLE-capable phone (tested on Pixel). Full setup, controls, and troubleshooting: [`android/README.md`](android/README.md).
+
+Quick start: Bluetooth ON → app **Connect** (no manual pairing) → streaming chart + Cents Focus card.
+
 ## Python visualizer (alternative)
 
 ```bash
@@ -122,9 +154,10 @@ python visualizer.py --simulate
 
 ## Future ideas
 
+- ESP32 live UART bridge from Teensy (replace canned scale)
 - Daisy Seed + contact mic variant
 - SD card session logging
-- Wireless / tablet client
+- iPad app (iOS scaffold in `ios/`; needs Mac)
 
 ## License
 

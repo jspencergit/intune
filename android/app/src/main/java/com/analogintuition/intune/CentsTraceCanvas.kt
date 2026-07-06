@@ -9,10 +9,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.sp
-import kotlin.math.abs
-
-private const val CENTS_SCALE_MAX = 50f
-private const val GOOD_ZONE_CENTS = 10f
+private const val CENTS_SCALE_MAX = 25f
 
 @Composable
 fun CentsTraceCanvas(
@@ -20,16 +17,17 @@ fun CentsTraceCanvas(
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    paused: Boolean = false,
+    scrubOffsetMs: Float = 0f,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
-        val gutter = 44f
-        val plotLeft = gutter + 8f
-        val plotRight = w - 12f
-        val plotTop = 28f
-        val plotBottom = h - 16f
+        val plotLeft = CentsChartGeometry.plotLeft()
+        val plotRight = CentsChartGeometry.plotRight(w)
+        val plotTop = CentsChartGeometry.PLOT_TOP
+        val plotBottom = CentsChartGeometry.plotBottom(h)
         val midY = (plotTop + plotBottom) * 0.5f
         val scaleY = (plotBottom - plotTop) * 0.5f / CENTS_SCALE_MAX
         val windowMs = windowSec * 1000f
@@ -48,35 +46,25 @@ fun CentsTraceCanvas(
             style = Stroke(width = 1.5f),
         )
 
-        // Good zone ±10¢
-        val goodOff = GOOD_ZONE_CENTS * scaleY
-        drawRect(
-            color = IntuneColors.GoodZone.copy(alpha = 0.12f),
-            topLeft = Offset(plotLeft, midY - goodOff),
-            size = androidx.compose.ui.geometry.Size(plotRight - plotLeft, goodOff * 2f),
-        )
-        drawLine(
-            IntuneColors.GoodZone.copy(alpha = 0.4f),
-            Offset(plotLeft, midY - goodOff),
-            Offset(plotRight, midY - goodOff),
-            strokeWidth = 1.2f,
-        )
-        drawLine(
-            IntuneColors.GoodZone.copy(alpha = 0.4f),
-            Offset(plotLeft, midY + goodOff),
-            Offset(plotRight, midY + goodOff),
-            strokeWidth = 1.2f,
-        )
-
-        // In-tune threshold band
         val tuneOff = inTuneThreshold * scaleY
         drawRect(
-            color = IntuneColors.TuneMarker.copy(alpha = 0.14f),
+            color = IntuneColors.TuneMarker.copy(alpha = 0.16f),
             topLeft = Offset(plotLeft, midY - tuneOff),
             size = androidx.compose.ui.geometry.Size(plotRight - plotLeft, tuneOff * 2f),
         )
+        drawLine(
+            IntuneColors.TuneMarker.copy(alpha = 0.55f),
+            Offset(plotLeft, midY - tuneOff),
+            Offset(plotRight, midY - tuneOff),
+            strokeWidth = 1.4f,
+        )
+        drawLine(
+            IntuneColors.TuneMarker.copy(alpha = 0.55f),
+            Offset(plotLeft, midY + tuneOff),
+            Offset(plotRight, midY + tuneOff),
+            strokeWidth = 1.4f,
+        )
 
-        // Zero line
         drawLine(
             IntuneColors.TextDim.copy(alpha = 0.35f),
             Offset(plotLeft, midY),
@@ -84,9 +72,8 @@ fun CentsTraceCanvas(
             strokeWidth = 1.4f,
         )
 
-        // Scale ticks (left)
-        val labels = listOf("+50", "+25", "+10", "0", "-10", "-25", "-50")
-        val values = listOf(50f, 25f, 10f, 0f, -10f, -25f, -50f)
+        val labels = listOf("+25", "+10", "0", "-10", "-25")
+        val values = listOf(25f, 10f, 0f, -10f, -25f)
         val paint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(160, 90, 100, 112)
             textSize = 11.sp.toPx()
@@ -103,17 +90,16 @@ fun CentsTraceCanvas(
             drawContext.canvas.nativeCanvas.drawText(label, 4f, y + 4f, paint)
         }
 
-        // Trace
-        if (samples.isNotEmpty()) {
-            var lastCents = 0f
-            val points = mutableListOf<Triple<Float, Float, androidx.compose.ui.graphics.Color>>()
+        var lastCents = 0f
+        val points = mutableListOf<Triple<Float, Float, androidx.compose.ui.graphics.Color>>()
 
+        if (samples.isNotEmpty()) {
             for (sample in samples) {
                 val age = displayNowMs - sample.hostTsMs
                 if (age < 0f || age > windowMs + 400f) continue
                 val x = ageToX(age)
                 val cents = if (sample.isRest) lastCents else sample.cents.also { lastCents = it }
-                val y = centsToY(cents)
+                val y = centsToY(cents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
                 val col = if (sample.isRest) {
                     IntuneColors.Rest.copy(alpha = 0.45f)
                 } else {
@@ -140,14 +126,54 @@ fun CentsTraceCanvas(
                     cap = StrokeCap.Round,
                 )
             }
+        }
 
-            // Playhead (now)
+        val cursorX = if (paused) {
+            CentsChartGeometry.scrubOffsetToX(scrubOffsetMs, w, windowMs)
+        } else {
+            plotRight
+        }
+
+        drawLine(
+            IntuneColors.Playhead.copy(alpha = if (paused) 0.95f else 0.85f),
+            Offset(cursorX, plotTop),
+            Offset(cursorX, plotBottom),
+            strokeWidth = if (paused) 3f else 2.5f,
+        )
+        if (paused) {
             drawLine(
-                IntuneColors.Playhead.copy(alpha = 0.85f),
-                Offset(plotRight, plotTop),
-                Offset(plotRight, plotBottom),
-                strokeWidth = 2.5f,
+                IntuneColors.Playhead.copy(alpha = 0.15f),
+                Offset(cursorX, plotTop),
+                Offset(cursorX, plotBottom),
+                strokeWidth = 10f,
             )
+        }
+
+        if (paused && samples.isNotEmpty()) {
+            val inspectMs = displayNowMs - scrubOffsetMs
+            val inspect = samples.nearestTo(inspectMs)
+            if (inspect != null) {
+                val inspectAge = displayNowMs - inspect.hostTsMs
+                if (inspectAge in 0f..windowMs + 400f) {
+                    val cents = if (inspect.isRest) 0f else inspect.cents
+                    val dotY = centsToY(cents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
+                    val dotCol = if (inspect.isRest) {
+                        IntuneColors.Rest
+                    } else {
+                        IntuneColors.centsColor(inspect.cents, inTuneThreshold)
+                    }
+                    drawCircle(
+                        color = dotCol.copy(alpha = 0.22f),
+                        radius = 11f,
+                        center = Offset(cursorX, dotY),
+                    )
+                    drawCircle(
+                        color = dotCol,
+                        radius = 6f,
+                        center = Offset(cursorX, dotY),
+                    )
+                }
+            }
         }
     }
 }

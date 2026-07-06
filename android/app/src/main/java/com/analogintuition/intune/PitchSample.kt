@@ -12,6 +12,9 @@ data class PitchSample(
     val displayNote: String get() = if (isRest) "REST" else note
 }
 
+fun List<PitchSample>.nearestTo(targetMs: Float): PitchSample? =
+    minByOrNull { kotlin.math.abs(it.hostTsMs - targetMs) }
+
 object PitchCsvParser {
     private const val SAMPLE_INTERVAL_MS = 1000f / 120f
 
