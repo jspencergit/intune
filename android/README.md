@@ -6,7 +6,8 @@ Kotlin / Jetpack Compose app for **real-time cents-focused intonation practice**
 
 - Connects to ESP32 **Nordic UART** BLE peripheral (advertises as **Intune**)
 - **Cents Focus** card — note name, ±cents, sharp/flat/in-tune status
-- Scrolling **±25¢** trace chart (light grey theme, aligned with PC visualizer)
+- Scrolling **±25¢** trace chart (default; light grey theme, aligned with PC visualizer)
+- **Staff view** toggle — alternate trace on alto/bass/treble staff (viola/cello/violin)
 - **Pause / Play** — freeze the trace; **drag chart** to scrub a vertical review cursor
 - **Scroll speed** — Slower / Faster (2–24 s visible window)
 - **In-tune zone** — Narrow / Widen (±2–25¢ threshold)
@@ -69,6 +70,8 @@ Key sources:
 | **Drag chart** (paused) | Move review cursor; updates Cents Focus card |
 | **Slower** / **Faster** | Wider / narrower time window |
 | **Narrow** / **Widen** | Tighter / looser in-tune band |
+| **Staff view** / **Cents view** | Toggle chart between staff and cents trace |
+| **Viola** / **Cello** / **Violin** (staff mode) | Cycle clef and practice range |
 
 ## Build from command line
 

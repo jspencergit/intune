@@ -21,6 +21,21 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
     var windowSec by mutableFloatStateOf(8f)
     var inTuneThreshold by mutableFloatStateOf(5f)
     var displayNowMs by mutableFloatStateOf(0f)
+    var traceViewMode by mutableStateOf(TraceViewMode.Cents)
+    var staffInstrument by mutableStateOf(StaffPitch.Instrument.Viola)
+
+    fun toggleTraceView() {
+        traceViewMode = when (traceViewMode) {
+            TraceViewMode.Cents -> TraceViewMode.Staff
+            TraceViewMode.Staff -> TraceViewMode.Cents
+        }
+    }
+
+    fun cycleStaffInstrument() {
+        val values = StaffPitch.Instrument.entries
+        val idx = values.indexOf(staffInstrument)
+        staffInstrument = values[(idx + 1) % values.size]
+    }
 
     init {
         viewModelScope.launch {

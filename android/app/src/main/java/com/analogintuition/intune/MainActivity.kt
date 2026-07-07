@@ -158,6 +158,8 @@ private fun IntuneScreen(
                 displayNowMs = displayNow,
                 windowSec = viewModel.windowSec,
                 inTuneThreshold = viewModel.inTuneThreshold,
+                traceViewMode = viewModel.traceViewMode,
+                staffInstrument = viewModel.staffInstrument,
                 paused = viewModel.paused,
                 scrubOffsetMs = viewModel.scrubOffsetMs,
                 onScrub = viewModel::setScrubOffset,
@@ -166,6 +168,8 @@ private fun IntuneScreen(
                 onScrollFaster = viewModel::scrollFaster,
                 onTuneWider = viewModel::widenTuneZone,
                 onTuneNarrower = viewModel::narrowTuneZone,
+                onToggleTraceView = viewModel::toggleTraceView,
+                onCycleInstrument = viewModel::cycleStaffInstrument,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -177,6 +181,8 @@ private fun IntuneScreen(
                 displayNowMs = displayNow,
                 windowSec = viewModel.windowSec,
                 inTuneThreshold = viewModel.inTuneThreshold,
+                traceViewMode = viewModel.traceViewMode,
+                staffInstrument = viewModel.staffInstrument,
                 paused = viewModel.paused,
                 scrubOffsetMs = viewModel.scrubOffsetMs,
                 onScrub = viewModel::setScrubOffset,
@@ -185,6 +191,8 @@ private fun IntuneScreen(
                 onScrollFaster = viewModel::scrollFaster,
                 onTuneWider = viewModel::widenTuneZone,
                 onTuneNarrower = viewModel::narrowTuneZone,
+                onToggleTraceView = viewModel::toggleTraceView,
+                onCycleInstrument = viewModel::cycleStaffInstrument,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -200,6 +208,8 @@ private fun PortraitPracticeLayout(
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    traceViewMode: TraceViewMode,
+    staffInstrument: StaffPitch.Instrument,
     paused: Boolean,
     scrubOffsetMs: Float,
     onScrub: (Float) -> Unit,
@@ -208,6 +218,8 @@ private fun PortraitPracticeLayout(
     onScrollFaster: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
+    onToggleTraceView: () -> Unit,
+    onCycleInstrument: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -226,7 +238,9 @@ private fun PortraitPracticeLayout(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
         ) {
-            CentsChartPanel(
+            TraceChartPanel(
+                traceViewMode = traceViewMode,
+                staffInstrument = staffInstrument,
                 samples = samples,
                 displayNowMs = displayNowMs,
                 windowSec = windowSec,
@@ -252,11 +266,15 @@ private fun PortraitPracticeLayout(
                     paused = paused,
                     windowSec = windowSec,
                     inTuneThreshold = inTuneThreshold,
+                    traceViewMode = traceViewMode,
+                    staffInstrument = staffInstrument,
                     onPauseToggle = onPauseToggle,
                     onScrollSlower = onScrollSlower,
                     onScrollFaster = onScrollFaster,
                     onTuneWider = onTuneWider,
                     onTuneNarrower = onTuneNarrower,
+                    onToggleTraceView = onToggleTraceView,
+                    onCycleInstrument = onCycleInstrument,
                     compact = false,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -272,6 +290,8 @@ private fun LandscapePracticeLayout(
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    traceViewMode: TraceViewMode,
+    staffInstrument: StaffPitch.Instrument,
     paused: Boolean,
     scrubOffsetMs: Float,
     onScrub: (Float) -> Unit,
@@ -280,6 +300,8 @@ private fun LandscapePracticeLayout(
     onScrollFaster: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
+    onToggleTraceView: () -> Unit,
+    onCycleInstrument: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -309,11 +331,15 @@ private fun LandscapePracticeLayout(
                     paused = paused,
                     windowSec = windowSec,
                     inTuneThreshold = inTuneThreshold,
+                    traceViewMode = traceViewMode,
+                    staffInstrument = staffInstrument,
                     onPauseToggle = onPauseToggle,
                     onScrollSlower = onScrollSlower,
                     onScrollFaster = onScrollFaster,
                     onTuneWider = onTuneWider,
                     onTuneNarrower = onTuneNarrower,
+                    onToggleTraceView = onToggleTraceView,
+                    onCycleInstrument = onCycleInstrument,
                     compact = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -324,7 +350,9 @@ private fun LandscapePracticeLayout(
                 .weight(1f)
                 .fillMaxHeight(),
         ) {
-            CentsChartPanel(
+            TraceChartPanel(
+                traceViewMode = traceViewMode,
+                staffInstrument = staffInstrument,
                 samples = samples,
                 displayNowMs = displayNowMs,
                 windowSec = windowSec,
@@ -339,7 +367,9 @@ private fun LandscapePracticeLayout(
 }
 
 @Composable
-private fun CentsChartPanel(
+private fun TraceChartPanel(
+    traceViewMode: TraceViewMode,
+    staffInstrument: StaffPitch.Instrument,
     samples: List<PitchSample>,
     displayNowMs: Float,
     windowSec: Float,
@@ -351,10 +381,19 @@ private fun CentsChartPanel(
 ) {
     var chartWidthPx by remember { mutableFloatStateOf(0f) }
     val windowMs = windowSec * 1000f
+    val plotLeft = when (traceViewMode) {
+        TraceViewMode.Cents -> CentsChartGeometry.plotLeft()
+        TraceViewMode.Staff -> StaffChartGeometry.plotLeft()
+    }
+    val plotRight = chartWidthPx - CentsChartGeometry.PLOT_RIGHT_PAD
 
     fun updateScrub(x: Float) {
         if (chartWidthPx > 0f) {
-            onScrub(CentsChartGeometry.xToScrubOffsetMs(x, chartWidthPx, windowMs))
+            onScrub(
+                ChartScrubGeometry.xToScrubOffsetMs(
+                    x, chartWidthPx, windowMs, plotLeft, plotRight,
+                ),
+            )
         }
     }
 
@@ -383,15 +422,27 @@ private fun CentsChartPanel(
                 },
             ),
     ) {
-        CentsTraceCanvas(
-            samples = samples,
-            displayNowMs = displayNowMs,
-            windowSec = windowSec,
-            inTuneThreshold = inTuneThreshold,
-            paused = paused,
-            scrubOffsetMs = scrubOffsetMs,
-            modifier = Modifier.fillMaxSize(),
-        )
+        when (traceViewMode) {
+            TraceViewMode.Cents -> CentsTraceCanvas(
+                samples = samples,
+                displayNowMs = displayNowMs,
+                windowSec = windowSec,
+                inTuneThreshold = inTuneThreshold,
+                paused = paused,
+                scrubOffsetMs = scrubOffsetMs,
+                modifier = Modifier.fillMaxSize(),
+            )
+            TraceViewMode.Staff -> StaffTraceCanvas(
+                samples = samples,
+                displayNowMs = displayNowMs,
+                windowSec = windowSec,
+                inTuneThreshold = inTuneThreshold,
+                instrument = staffInstrument,
+                paused = paused,
+                scrubOffsetMs = scrubOffsetMs,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 
@@ -526,11 +577,15 @@ private fun ControlPanel(
     paused: Boolean,
     windowSec: Float,
     inTuneThreshold: Float,
+    traceViewMode: TraceViewMode,
+    staffInstrument: StaffPitch.Instrument,
     onPauseToggle: () -> Unit,
     onScrollSlower: () -> Unit,
     onScrollFaster: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
+    onToggleTraceView: () -> Unit,
+    onCycleInstrument: () -> Unit,
     compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -561,6 +616,31 @@ private fun ControlPanel(
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,
             )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilledTonalButton(
+                onClick = onToggleTraceView,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    if (traceViewMode == TraceViewMode.Cents) "Staff view" else "Cents view",
+                    fontSize = if (compact) 12.sp else 13.sp,
+                )
+            }
+            if (traceViewMode == TraceViewMode.Staff) {
+                FilledTonalButton(
+                    onClick = onCycleInstrument,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        staffInstrument.label,
+                        fontSize = if (compact) 12.sp else 13.sp,
+                    )
+                }
+            }
         }
         ControlRow(
             label = "Scroll speed",

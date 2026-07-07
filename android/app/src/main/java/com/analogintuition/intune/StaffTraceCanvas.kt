@@ -9,14 +9,14 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.sp
-private const val CENTS_SCALE_MAX = 25f
 
 @Composable
-fun CentsTraceCanvas(
+fun StaffTraceCanvas(
     samples: List<PitchSample>,
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    instrument: StaffPitch.Instrument = StaffPitch.Instrument.Viola,
     paused: Boolean = false,
     scrubOffsetMs: Float = 0f,
     modifier: Modifier = Modifier,
@@ -24,15 +24,15 @@ fun CentsTraceCanvas(
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
-        val plotLeft = CentsChartGeometry.plotLeft()
-        val plotRight = CentsChartGeometry.plotRight(w)
-        val plotTop = CentsChartGeometry.PLOT_TOP
-        val plotBottom = CentsChartGeometry.plotBottom(h)
-        val midY = (plotTop + plotBottom) * 0.5f
-        val scaleY = (plotBottom - plotTop) * 0.5f / CENTS_SCALE_MAX
+        val plotLeft = StaffChartGeometry.plotLeft()
+        val plotRight = StaffChartGeometry.plotRight(w)
+        val plotTop = StaffChartGeometry.PLOT_TOP
+        val plotBottom = StaffChartGeometry.plotBottom(h)
         val windowMs = windowSec * 1000f
 
-        fun centsToY(cents: Float) = midY - cents * scaleY
+        fun pitchToY(pitchY: Float): Float =
+            StaffPitch.pitchToScreenY(pitchY, plotTop, plotBottom, instrument)
+
         fun ageToX(ageMs: Float): Float {
             val t = (ageMs / windowMs).coerceIn(0f, 1f)
             return plotRight - t * (plotRight - plotLeft)
@@ -46,51 +46,47 @@ fun CentsTraceCanvas(
             style = Stroke(width = 1.5f),
         )
 
-        val tuneOff = inTuneThreshold * scaleY
-        drawRect(
-            color = IntuneColors.TuneMarker.copy(alpha = 0.16f),
-            topLeft = Offset(plotLeft, midY - tuneOff),
-            size = androidx.compose.ui.geometry.Size(plotRight - plotLeft, tuneOff * 2f),
-        )
-        drawLine(
-            IntuneColors.TuneMarker.copy(alpha = 0.55f),
-            Offset(plotLeft, midY - tuneOff),
-            Offset(plotRight, midY - tuneOff),
-            strokeWidth = 1.4f,
-        )
-        drawLine(
-            IntuneColors.TuneMarker.copy(alpha = 0.55f),
-            Offset(plotLeft, midY + tuneOff),
-            Offset(plotRight, midY + tuneOff),
-            strokeWidth = 1.4f,
-        )
-
-        drawLine(
-            IntuneColors.TextDim.copy(alpha = 0.35f),
-            Offset(plotLeft, midY),
-            Offset(plotRight, midY),
-            strokeWidth = 1.4f,
-        )
-
-        val labels = listOf("+25", "+10", "0", "-10", "-25")
-        val values = listOf(25f, 10f, 0f, -10f, -25f)
-        val paint = android.graphics.Paint().apply {
-            color = android.graphics.Color.argb(160, 90, 100, 112)
-            textSize = 11.sp.toPx()
+        val clefPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(210, 58, 68, 80)
+            textSize = 34.sp.toPx()
             isAntiAlias = true
         }
-        values.zip(labels).forEach { (cents, label) ->
-            val y = centsToY(cents)
+        val clefY = (plotTop + plotBottom) * 0.5f + 12.sp.toPx()
+        drawContext.canvas.nativeCanvas.drawText(instrument.clefSymbol, 6f, clefY, clefPaint)
+
+        val labelPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(140, 90, 100, 112)
+            textSize = 10.sp.toPx()
+            isAntiAlias = true
+        }
+        drawContext.canvas.nativeCanvas.drawText(
+            instrument.label,
+            6f,
+            plotTop - 6f,
+            labelPaint,
+        )
+
+        for (ledger in StaffPitch.ledgerLines(instrument)) {
+            val y = pitchToY(ledger)
             drawLine(
-                IntuneColors.TextDim.copy(alpha = 0.3f),
-                Offset(plotLeft - 8f, y),
+                IntuneColors.TextDim.copy(alpha = 0.22f),
                 Offset(plotLeft, y),
+                Offset(plotRight, y),
                 strokeWidth = 1f,
             )
-            drawContext.canvas.nativeCanvas.drawText(label, 4f, y + 4f, paint)
         }
 
-        var lastCents = 0f
+        for (line in instrument.staffLines) {
+            val y = pitchToY(line)
+            drawLine(
+                IntuneColors.TextPrimary.copy(alpha = 0.55f),
+                Offset(plotLeft, y),
+                Offset(plotRight, y),
+                strokeWidth = 1.6f,
+            )
+        }
+
+        var lastPitchY = StaffPitch.Y_REST
         val points = mutableListOf<Triple<Float, Float, androidx.compose.ui.graphics.Color>>()
 
         if (samples.isNotEmpty()) {
@@ -98,12 +94,17 @@ fun CentsTraceCanvas(
                 val age = displayNowMs - sample.hostTsMs
                 if (age < 0f || age > windowMs + 400f) continue
                 val x = ageToX(age)
-                val cents = if (sample.isRest) lastCents else sample.cents.also { lastCents = it }
-                val y = centsToY(cents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
+                val pitchY = if (sample.isRest) {
+                    lastPitchY
+                } else {
+                    StaffPitch.pitchYWithCents(sample.note, sample.cents).also { lastPitchY = it }
+                }
+                val y = pitchToY(pitchY)
                 val col = if (sample.isRest) {
                     IntuneColors.Rest.copy(alpha = 0.45f)
                 } else {
-                    IntuneColors.centsColor(cents, inTuneThreshold)
+                    val alpha = 0.45f + sample.confidence.coerceIn(0f, 1f) * 0.55f
+                    IntuneColors.centsColor(sample.cents, inTuneThreshold).copy(alpha = alpha)
                 }
                 points.add(Triple(x, y, col))
             }
@@ -112,7 +113,7 @@ fun CentsTraceCanvas(
                 val (x0, y0, _) = points[i - 1]
                 val (x1, y1, c1) = points[i]
                 drawLine(
-                    color = c1.copy(alpha = 0.25f),
+                    color = c1.copy(alpha = c1.alpha * 0.25f),
                     start = Offset(x0, y0),
                     end = Offset(x1, y1),
                     strokeWidth = 7f,
@@ -157,8 +158,12 @@ fun CentsTraceCanvas(
             if (inspect != null) {
                 val inspectAge = displayNowMs - inspect.hostTsMs
                 if (inspectAge in 0f..windowMs + 400f) {
-                    val cents = if (inspect.isRest) 0f else inspect.cents
-                    val dotY = centsToY(cents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
+                    val pitchY = if (inspect.isRest) {
+                        lastPitchY
+                    } else {
+                        StaffPitch.pitchYWithCents(inspect.note, inspect.cents)
+                    }
+                    val dotY = pitchToY(pitchY)
                     val dotCol = if (inspect.isRest) {
                         IntuneColors.Rest
                     } else {
