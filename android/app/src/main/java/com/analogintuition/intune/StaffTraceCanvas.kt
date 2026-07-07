@@ -46,13 +46,20 @@ fun StaffTraceCanvas(
             style = Stroke(width = 1.5f),
         )
 
-        val clefPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.argb(210, 58, 68, 80)
-            textSize = 34.sp.toPx()
-            isAntiAlias = true
-        }
-        val clefY = (plotTop + plotBottom) * 0.5f + 12.sp.toPx()
-        drawContext.canvas.nativeCanvas.drawText(instrument.clefSymbol, 6f, clefY, clefPaint)
+        val staffSpacePx = kotlin.math.abs(
+            pitchToY(instrument.staffLines[2]) - pitchToY(instrument.staffLines[3]),
+        )
+        val clefCenter = Offset(
+            x = StaffChartGeometry.GUTTER * 0.46f,
+            y = pitchToY(instrument.clefAnchor),
+        )
+        ClefDrawer.draw(
+            scope = this,
+            instrument = instrument,
+            center = clefCenter,
+            staffSpacePx = staffSpacePx,
+            color = IntuneColors.TextPrimary.copy(alpha = 0.72f),
+        )
 
         val labelPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(140, 90, 100, 112)

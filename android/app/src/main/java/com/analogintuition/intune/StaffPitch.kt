@@ -13,28 +13,29 @@ object StaffPitch {
         val pitchMin: Float,
         val pitchMax: Float,
         val staffLines: FloatArray,
-        val clefSymbol: String,
+        /** Pitch Y where the clef is anchored (middle line for alto, etc.). */
+        val clefAnchor: Float,
     ) {
         Viola(
             label = "Viola",
             pitchMin = 1.2f,
             pitchMax = 7.6f,
             staffLines = floatArrayOf(2.4f, 3.2f, 4.0f, 4.8f, 5.6f),
-            clefSymbol = "\uD834\uDD1F", // 𝄡 alto clef
+            clefAnchor = 4.0f,
         ),
         Cello(
             label = "Cello",
             pitchMin = -1.6f,
             pitchMax = 4.0f,
             staffLines = floatArrayOf(0.0f, 0.4f, 1.6f, 2.4f, 3.2f),
-            clefSymbol = "\uD834\uDD22", // 𝄢 bass clef
+            clefAnchor = 2.4f,
         ),
         Violin(
             label = "Violin",
             pitchMin = 4.0f,
             pitchMax = 8.4f,
             staffLines = floatArrayOf(4.8f, 5.6f, 6.4f, 7.2f, 8.0f),
-            clefSymbol = "\uD834\uDD1E", // 𝄞 treble clef
+            clefAnchor = 5.6f,
         ),
     }
 
