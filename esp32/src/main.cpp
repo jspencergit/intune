@@ -1,154 +1,95 @@
 #include <Arduino.h>
-#include <math.h>
 
 #include "ble_uart.h"
 
-// Teensy-compatible CSV stream for visualizer bring-up (USB serial + BLE UART).
-//   timestamp_ms,Note,Cents,probability,level
+// Teensy UART → BLE bridge for Intune Stream (Android).
 //
-// Plays C major up + down with the same per-note detune map as generate_test_scale.py.
+// Wiring (one-way): Teensy pin 17 (Serial4 TX) → ESP32 UART RX. Common GND required.
+//
+// ESP32 RX pin options (DO NOT use RX0 — that is GPIO3 / USB-serial):
+//   GPIO16  — best (hardware UART2 RX, no boot quirks)
+//   GPIO13  — ok (D13 on most dev boards)
+//
+// CSV format from Teensy: timestamp_ms,Note,Cents,probability,level
 
-constexpr uint32_t OUTPUT_INTERVAL_US = 8333;  // 120 Hz — matches Teensy + visualizer
-constexpr uint32_t NOTE_HOLD_MS = 1000;
-constexpr uint32_t REST_MS = 180;
+constexpr uint32_t TEENSY_BAUD = 115200;  // must match Teensy Serial4 baud
+constexpr int TEENSY_RX_PIN = 13;         // D13 / GPIO13 (or use 16 = UART2 RX if you rewire)
+constexpr int TEENSY_TX_PIN = 17;         // unused TX — keeps UART driver fully initialized
 constexpr size_t LINE_BUF_LEN = 96;
 
-struct ScaleEntry {
-    const char* note;
-    float detune_cents;
-};
+static char line_buf[LINE_BUF_LEN];
+static size_t line_len = 0;
+static uint32_t lines_received = 0;
+static uint32_t lines_forwarded = 0;
+static uint32_t last_stats_ms = 0;
+static char last_line[LINE_BUF_LEN];
 
-static const ScaleEntry kScaleUp[] = {
-    {"C3", +7.0f},  {"D3", -5.0f},  {"E3", +10.0f}, {"F3", -6.0f},  {"G3", +8.0f},
-    {"A3", -9.0f},  {"B3", +4.0f},  {"C4", -7.0f},  {"D4", +11.0f}, {"E4", -5.0f},
-    {"F4", +6.0f},  {"G4", -8.0f},  {"A4", +9.0f},  {"B4", -4.0f},  {"C5", +7.0f},
-    {"D5", -10.0f}, {"E5", +5.0f},
-};
-static const size_t kScaleUpLen = sizeof(kScaleUp) / sizeof(kScaleUp[0]);
-
-static const ScaleEntry kScaleDown[] = {
-    {"D5", -10.0f}, {"C5", +7.0f},  {"B4", -4.0f},  {"A4", +9.0f},  {"G4", -8.0f},
-    {"F4", +6.0f},  {"E4", -5.0f},  {"D4", +11.0f}, {"C4", -7.0f},  {"B3", +4.0f},
-    {"A3", -9.0f},  {"G3", +8.0f},  {"F3", -6.0f},  {"E3", +10.0f}, {"D3", -5.0f},
-    {"C3", +7.0f},
-};
-static const size_t kScaleDownLen = sizeof(kScaleDown) / sizeof(kScaleDown[0]);
-
-enum class Phase { Note, Rest };
-
-static const ScaleEntry* phase_note_ = nullptr;
-static float phase_cents_ = 0.0f;
-static Phase phase_ = Phase::Rest;
-static uint32_t phase_elapsed_ms_ = 0;
-static uint32_t phase_duration_ms_ = REST_MS;
-static size_t scale_idx_ = 0;
-static bool scale_ascending_ = true;
-static float vibrato_phase_ = 0.0f;
-
-static void begin_note(const ScaleEntry& entry) {
-    phase_note_ = &entry;
-    phase_cents_ = entry.detune_cents;
-    phase_ = Phase::Note;
-    phase_elapsed_ms_ = 0;
-    phase_duration_ms_ = NOTE_HOLD_MS;
+static void reset_line_buf() {
+    line_len = 0;
+    line_buf[0] = '\0';
 }
 
-static void begin_rest() {
-    phase_note_ = nullptr;
-    phase_ = Phase::Rest;
-    phase_elapsed_ms_ = 0;
-    phase_duration_ms_ = REST_MS;
+static void forward_line() {
+    if (line_len == 0) return;
+    lines_received++;
+    strncpy(last_line, line_buf, sizeof(last_line) - 1);
+    last_line[sizeof(last_line) - 1] = '\0';
+    // Android parser splits on '\n' — must include it (scale simulator did).
+    line_buf[line_len++] = '\n';
+    ble_uart_notify_line(line_buf, line_len);
+    if (ble_uart_has_client()) lines_forwarded++;
+    reset_line_buf();
 }
 
-static void advance_scale() {
-    if (scale_ascending_) {
-        if (scale_idx_ < kScaleUpLen) {
-            begin_note(kScaleUp[scale_idx_++]);
-            if (scale_idx_ >= kScaleUpLen) {
-                scale_ascending_ = false;
-                scale_idx_ = 0;
-            }
-            return;
-        }
-    } else {
-        if (scale_idx_ < kScaleDownLen) {
-            begin_note(kScaleDown[scale_idx_++]);
-            if (scale_idx_ >= kScaleDownLen) {
-                scale_ascending_ = true;
-                scale_idx_ = 0;
-            }
-            return;
-        }
+static void handle_rx_char(char c) {
+    if (c == '\r') return;
+    if (c == '\n') {
+        forward_line();
+        return;
     }
-    begin_rest();
-}
-
-static void tick_phase(uint32_t dt_ms) {
-    phase_elapsed_ms_ += dt_ms;
-    if (phase_elapsed_ms_ < phase_duration_ms_) return;
-
-    if (phase_ == Phase::Note) {
-        begin_rest();
+    if (line_len < LINE_BUF_LEN - 1) {
+        line_buf[line_len++] = c;
+        line_buf[line_len] = '\0';
     } else {
-        advance_scale();
+        reset_line_buf();
     }
 }
 
-static void emit_line(const char* line) {
-    Serial.print(line);
-    ble_uart_notify_line(line, strlen(line));
-}
-
-static void emit_sample(uint32_t ts_ms) {
-    char line[LINE_BUF_LEN];
-    vibrato_phase_ += 0.11f;
-    const float vibrato = sinf(vibrato_phase_) * 1.5f;
-
-    if (phase_ == Phase::Note && phase_note_ != nullptr) {
-        const float cents = phase_cents_ + vibrato;
-        snprintf(line, sizeof(line), "%lu,%s,%+.1f,%.2f,%.3f\n",
-                 (unsigned long)ts_ms, phase_note_->note, cents, 0.90f, 0.022f);
-    } else {
-        snprintf(line, sizeof(line), "%lu,---,0,0.00,%.3f\n",
-                 (unsigned long)ts_ms, 0.0003f);
+static void drain_teensy_uart() {
+    while (Serial2.available() > 0) {
+        handle_rx_char(static_cast<char>(Serial2.read()));
     }
-    emit_line(line);
 }
 
 void setup() {
     Serial.begin(115200);
     delay(800);
+
+    Serial2.setRxBufferSize(2048);
+    Serial2.begin(TEENSY_BAUD, SERIAL_8N1, TEENSY_RX_PIN, TEENSY_TX_PIN);
     ble_uart_begin("Intune");
+
     Serial.println();
-    Serial.println("=== Intune ESP32 scale simulator + BLE UART ===");
+    Serial.println("=== Intune ESP32 UART -> BLE bridge ===");
+    Serial.printf("Teensy UART: GPIO%d RX @ %lu baud (TX GPIO%d unused)\n",
+                  TEENSY_RX_PIN, (unsigned long)TEENSY_BAUD, TEENSY_TX_PIN);
     Serial.println("BLE name: Intune  (Nordic UART Service)");
-    Serial.println("C major up/down, slightly detuned @ 120 Hz");
-    Serial.println("Format: timestamp_ms,Note,Cents,probability,level");
-    begin_rest();
+    Serial.println("Do NOT wire to RX0 (GPIO3) — that is the USB-serial pin.");
 }
 
 void loop() {
-    static uint32_t next_output_us = 0;
-    static uint32_t last_tick_ms = 0;
-
-    const uint32_t now_us = micros();
-    if (next_output_us == 0) {
-        next_output_us = now_us;
-        last_tick_ms = millis();
-    }
+    drain_teensy_uart();
 
     const uint32_t now_ms = millis();
-    const uint32_t dt_ms = now_ms - last_tick_ms;
-    if (dt_ms > 0) {
-        tick_phase(dt_ms);
-        last_tick_ms = now_ms;
-    }
-
-    if ((int32_t)(now_us - next_output_us) >= (int32_t)OUTPUT_INTERVAL_US) {
-        next_output_us += OUTPUT_INTERVAL_US;
-        if ((int32_t)(now_us - next_output_us) > (int32_t)OUTPUT_INTERVAL_US) {
-            next_output_us = now_us;
+    if (now_ms - last_stats_ms >= 5000) {
+        last_stats_ms = now_ms;
+        Serial.printf("[bridge] uart_lines=%lu ble_fwd=%lu ble_client=%s",
+                      (unsigned long)lines_received,
+                      (unsigned long)lines_forwarded,
+                      ble_uart_has_client() ? "yes" : "no");
+        if (last_line[0] != '\0') {
+            Serial.printf(" last=\"%s\"", last_line);
         }
-        emit_sample(next_output_us / 1000);
+        Serial.println();
     }
 }

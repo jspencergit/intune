@@ -13,7 +13,7 @@
  *   SCK   (white) → Pin 21  (BCLK)
  *   WS    (grey)  → Pin 20  (LRCLK / WS)
  *   SD    (brown) → Pin 8   (DIN - Data In)
- *   L/R   (purple)→ GND     (selects Left channel - most common for single mic)
+ *   L/R   (purple)→ Pin 0   (driven LOW in firmware — same as GND, selects Left channel)
  *
  * Power: INMP441 is 3.3V only. Do NOT connect VDD to 5V.
  */
@@ -28,12 +28,16 @@
  * When volume is sufficient, we output whatever the YIN detector reports
  * (including periods of low confidence, which the visualizer will show faded).
  *
- * Serial output format (for visualizer):
+ * Serial output format (USB + ESP32 UART bridge):
  *   timestamp,Note,Cents,probability,level
+ *
+ * Outputs (same CSV on both):
+ *   - USB Serial @ 230400  → PC visualizer
+ *   - Serial4 TX pin 17 @ 115200 → ESP32 GPIO16 or D13/GPIO13 (RX) → BLE → Android
  *
  * To run:
  *   - Flash to Teensy 4.1 with INMP441 wired (see pinout above)
- *   - python visualizer.py --port COMx
+ *   - intune_viz.exe --port COMx
  */
 
 AudioInputI2S             i2s1;          // Real microphone input
@@ -45,13 +49,31 @@ AudioConnection patchCord2(i2s1, 0, peak1, 0);
 
 const char* noteToName(int midi);
 
+constexpr uint8_t MIC_LR_SELECT_PIN = 0;  // Teensy 4.1 pin 0 — drive LOW for INMP441 left channel
+constexpr uint32_t USB_BAUD = 230400;    // PC visualizer
+constexpr uint32_t ESP32_BAUD = 115200;  // jumper wire to ESP32 — more reliable than 230400
+
+static void emitSampleLine(uint32_t ts_ms, const char* note, float cents, float prob, float level) {
+  char line[96];
+  snprintf(line, sizeof(line), "%lu,%s,%+.1f,%.2f,%.3f\n",
+           (unsigned long)ts_ms, note, cents, prob, level);
+  Serial.print(line);
+  Serial4.print(line);
+}
+
 void setup() {
-  Serial.begin(230400);
+  Serial.begin(USB_BAUD);
+  Serial4.begin(ESP32_BAUD);  // TX4 = pin 17 → ESP32 UART RX (GPIO16 preferred, GPIO13/D13 ok)
   delay(1500);
+
+  // INMP441 L/R: GND = left channel, VDD = right channel. Pin 0 held LOW replaces a GND tie.
+  pinMode(MIC_LR_SELECT_PIN, OUTPUT);
+  digitalWrite(MIC_LR_SELECT_PIN, LOW);
+
   AudioMemory(80);   // For I2S mic + NoteFrequency + Peak
   
   Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
-  Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=GND ===");
+  Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=Pin0(LOW), ESP32=Pin17(TX4) ===");
   Serial.println("=== Constant-rate output (120 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
   Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. ===");
   
@@ -117,18 +139,18 @@ void loop() {
         strncpy(last_note, nm, sizeof(last_note)-1);
         last_note[sizeof(last_note)-1] = '\0';
 
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", nextOutputUs / 1000, last_note, last_cents, last_prob, level);
+        emitSampleLine(nextOutputUs / 1000, last_note, last_cents, last_prob, level);
       } else if (last_freq > 0) {
         // Volume is still high enough to be "sounding", but either no fresh YIN this tick or level too low for a new lock:
         // hold the last good note so the trace stays steady on the correct pitch.
-        Serial.printf("%lu,%s,%+.1f,%.2f,%.3f\n", nextOutputUs / 1000, last_note, last_cents, last_prob, level);
+        emitSampleLine(nextOutputUs / 1000, last_note, last_cents, last_prob, level);
       } else {
         // High volume but never locked yet
-        Serial.printf("%lu,---,0,0.00,%.3f\n", nextOutputUs / 1000, level);
+        emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
       }
     } else {
       // Below rest threshold → explicit rest (and keep last_good so it can resume quickly if volume returns)
-      Serial.printf("%lu,---,0,0.00,%.3f\n", nextOutputUs / 1000, level);
+      emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
     }
   }
 }

@@ -215,7 +215,12 @@ class BleStreamClient(context: Context) {
         val text = lineBuffer.toString()
         val parts = text.split('\n')
         lineBuffer = StringBuilder(parts.last())
-        val complete = parts.dropLast(1).map { it.trim() }.filter { it.isNotEmpty() }
+        val complete = parts.dropLast(1).map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+        val pending = parts.last().trim()
+        if (pending.isNotEmpty() && PitchCsvParser.parse(pending) != null) {
+            complete.add(pending)
+            lineBuffer = StringBuilder()
+        }
         if (complete.isEmpty()) return
         val parsed = complete.mapNotNull { PitchCsvParser.parse(it) }
         if (parsed.isEmpty()) return
