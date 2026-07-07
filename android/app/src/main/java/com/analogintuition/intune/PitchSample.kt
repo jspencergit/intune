@@ -7,6 +7,8 @@ data class PitchSample(
     val cents: Float,
     val confidence: Float,
     val level: Float,
+    /** Continuous filtered pitch for display smoothing (NaN if unknown). */
+    val pitchMidi: Float = Float.NaN,
 ) {
     val isRest: Boolean get() = note == "---" || note == "REST"
     val displayNote: String get() = if (isRest) "REST" else note

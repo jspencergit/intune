@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.sp
+
 private const val CENTS_SCALE_MAX = 25f
 
 @Composable
@@ -90,21 +91,22 @@ fun CentsTraceCanvas(
             drawContext.canvas.nativeCanvas.drawText(label, 4f, y + 4f, paint)
         }
 
-        var lastCents = 0f
         val points = mutableListOf<Triple<Float, Float, androidx.compose.ui.graphics.Color>>()
+        val smoother = CentsDisplaySmoother()
 
         if (samples.isNotEmpty()) {
-            for (sample in samples) {
+            val ordered = samples.sortedBy { it.hostTsMs }
+            for (sample in ordered) {
                 val age = displayNowMs - sample.hostTsMs
-                if (age < 0f || age > windowMs + 400f) continue
+                if (age < 0f) continue
+
+                val smoothCents = smoother.next(sample)
+                if (age > windowMs + 400f || smoothCents == null) continue
+
                 val x = ageToX(age)
-                val cents = if (sample.isRest) lastCents else sample.cents.also { lastCents = it }
-                val y = centsToY(cents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
-                val col = if (sample.isRest) {
-                    IntuneColors.Rest.copy(alpha = 0.45f)
-                } else {
-                    IntuneColors.centsColor(cents, inTuneThreshold)
-                }
+                val cents = smoothCents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX)
+                val y = centsToY(cents)
+                val col = IntuneColors.centsColor(cents, inTuneThreshold)
                 points.add(Triple(x, y, col))
             }
 
@@ -157,12 +159,17 @@ fun CentsTraceCanvas(
             if (inspect != null) {
                 val inspectAge = displayNowMs - inspect.hostTsMs
                 if (inspectAge in 0f..windowMs + 400f) {
-                    val cents = if (inspect.isRest) 0f else inspect.cents
-                    val dotY = centsToY(cents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
+                    val replay = CentsDisplaySmoother()
+                    var inspectCents = 0f
+                    for (sample in samples.sortedBy { it.hostTsMs }) {
+                        if (sample.hostTsMs > inspect.hostTsMs) break
+                        replay.next(sample)?.let { inspectCents = it }
+                    }
+                    val dotY = centsToY(inspectCents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
                     val dotCol = if (inspect.isRest) {
                         IntuneColors.Rest
                     } else {
-                        IntuneColors.centsColor(inspect.cents, inTuneThreshold)
+                        IntuneColors.centsColor(inspectCents, inTuneThreshold)
                     }
                     drawCircle(
                         color = dotCol.copy(alpha = 0.22f),

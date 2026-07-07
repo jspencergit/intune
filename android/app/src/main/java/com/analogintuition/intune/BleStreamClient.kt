@@ -54,6 +54,7 @@ class BleStreamClient(context: Context) {
     private var lineBuffer = StringBuilder()
     private var streamAnchorMs = 0L
     private var scanTimeoutRunnable: Runnable? = null
+    private val pitchFilter = PitchStreamFilter()
 
     fun hostNowMs(): Float {
         if (streamAnchorMs == 0L) streamAnchorMs = SystemClock.elapsedRealtime()
@@ -184,6 +185,7 @@ class BleStreamClient(context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 resetStreamClock()
                 lineBuffer = StringBuilder()
+                pitchFilter.reset()
                 _state.value = _state.value.copy(status = "Streaming…", samples = emptyList())
             } else {
                 _state.value = _state.value.copy(status = "Enable notify failed ($status)")
@@ -224,7 +226,8 @@ class BleStreamClient(context: Context) {
         if (complete.isEmpty()) return
         val parsed = complete.mapNotNull { PitchCsvParser.parse(it) }
         if (parsed.isEmpty()) return
-        val stamped = PitchCsvParser.assignHostTimestamps(parsed, hostNowMs())
+        val filtered = pitchFilter.filter(parsed)
+        val stamped = PitchCsvParser.assignHostTimestamps(filtered, hostNowMs())
         val merged = (_state.value.samples + stamped).takeLast(MAX_SAMPLES)
         _state.value = _state.value.copy(samples = merged)
     }
@@ -295,6 +298,7 @@ class BleStreamClient(context: Context) {
         gatt?.close()
         gatt = null
         streamAnchorMs = 0L
+        pitchFilter.reset()
         if (clearStatus && status != null) {
             _state.value = _state.value.copy(
                 connected = false,
