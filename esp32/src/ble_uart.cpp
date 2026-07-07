@@ -14,6 +14,14 @@ class IntuneServerCallbacks : public NimBLEServerCallbacks {
         // Ask for a faster connection interval (7.5–15 ms) when the central allows it.
         server->updateConnParams(conn_info.getConnHandle(), 6, 12, 0, 400);
     }
+
+    void onDisconnect(NimBLEServer* server, NimBLEConnInfo& conn_info, int reason) override {
+        (void)server;
+        (void)conn_info;
+        (void)reason;
+        // Advertising stops while connected; restart so the app can reconnect without power-cycle.
+        NimBLEDevice::startAdvertising();
+    }
 };
 
 void ble_uart_begin(const char* device_name) {

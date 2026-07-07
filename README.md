@@ -145,7 +145,7 @@ cd esp32
 pio run -t upload
 ```
 
-After flashing, **power-cycle** the ESP32 so BLE advertising is reliable. Device name: **Intune**. Close PlatformIO serial monitor before upload if the port is busy.
+After flashing, **power-cycle** the ESP32 once so BLE advertising is reliable. Device name: **Intune**. Advertising restarts automatically when the app disconnects (no power-cycle needed for reconnect). Close PlatformIO serial monitor before upload if the port is busy.
 
 Firmware reads live CSV from the Teensy on **GPIO13 (D13) @ 115200 baud** and forwards each line over BLE (with newline — required by the Android parser). USB serial @ 115200 prints bridge stats every 5 s, e.g. `[bridge] uart_lines=600 ble_fwd=600 ble_client=yes`.
 

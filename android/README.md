@@ -30,7 +30,7 @@ Kotlin / Jetpack Compose app for **real-time cents-focused intonation practice**
 
 | Symptom | Fix |
 |---------|-----|
-| Scanning, won't connect | Power-cycle ESP32; close serial monitor; tap Connect again |
+| Scanning, won't connect | Tap Connect again (ESP32 restarts advertising on disconnect); if still stuck, power-cycle ESP32 |
 | Connected, no samples | Confirm Teensy→ESP32 UART (pin 17→D13, GND); ESP32 serial should show `uart_lines` climbing; power-cycle ESP32 |
 | Drops after firmware flash | Unplug/replug ESP32 USB, then reconnect in app |
 

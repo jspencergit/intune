@@ -271,7 +271,22 @@ class BleStreamClient(context: Context) {
     @SuppressLint("MissingPermission")
     fun disconnect() {
         stopScanInternal()
-        cleanupGatt("Disconnected")
+        val activeGatt = gatt
+        if (activeGatt == null) {
+            _state.value = _state.value.copy(
+                connected = false,
+                scanning = false,
+                status = "Disconnected",
+                samples = emptyList(),
+            )
+            return
+        }
+        _state.value = _state.value.copy(
+            connected = false,
+            scanning = false,
+            status = "Disconnecting…",
+        )
+        activeGatt.disconnect()
     }
 
     @SuppressLint("MissingPermission")
