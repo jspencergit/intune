@@ -31,12 +31,22 @@ Teensy 4.1 + I²S mic  ──serial CSV @ 230400──►  PC visualizer (intune
 **Mobile (Android + ESP32 BLE bridge)**
 
 ```
-Teensy 4.1 + I²S mic  ──UART──►  ESP32  ──BLE Nordic UART──►  Android app
-                                      │
-                                      └─ canned scale simulator (dev / no Teensy)
+Teensy 4.1 + I²S mic  ──Serial4 @ 115200──►  ESP32  ──BLE Nordic UART──►  Android app
+        │                    (pin 17 → D13)         │
+        └── USB @ 230400 ──► PC visualizer         └── forwards live mic CSV
 ```
 
 Android app: **Cents Focus** trace, pause + finger scrub, scroll speed, adjustable in-tune zone. See [`android/README.md`](android/README.md).
+
+### Teensy ↔ ESP32 wiring
+
+| Teensy 4.1 | → | ESP32 DevKit |
+|------------|---|--------------|
+| **Pin 17** (Serial4 TX) | → | **D13** (GPIO13 RX) |
+| **GND** | → | **GND** |
+| **5V** | → | **5V** (optional — powers ESP32 from Teensy) |
+
+One-way UART (Teensy sends, ESP32 receives). **Do not** use ESP32 **RX0** (GPIO3) — that is the USB-serial pin. On Teensy 4.1, pin 17 is **Serial4 TX**, not Serial8 (Serial8 TX is pin 35).
 
 Serial line format: `timestamp,Note,cents,confidence,level`  
 Example: `12345,F#4,+6.2,0.91,0.42` · Rests: `---`
@@ -98,7 +108,7 @@ cd visualizer_raylib\build\Release
 |------|-------------|
 | `teensy/` | Teensy 4.1 firmware (PlatformIO) — YIN pitch, 120 Hz output |
 | `visualizer_raylib/` | **Primary PC visualizer** — C++ / raylib, GPU-accelerated |
-| `esp32/` | ESP32 BLE UART bridge + scale simulator (PlatformIO / NimBLE) |
+| `esp32/` | ESP32 UART → BLE bridge (PlatformIO / NimBLE) |
 | `android/` | **Intune Stream** — Kotlin / Compose cents visualizer over BLE |
 | `ios/` | iOS BLE scaffold (requires Mac / Xcode to build) |
 | `visualizer/` | Legacy Python visualizer (PyQt5 + pyqtgraph) |
@@ -124,6 +134,8 @@ cd teensy
 pio run -t upload
 ```
 
+INMP441 mic: SCK→21, WS→20, SD→8, VDD→3.3V, GND→GND, L/R (purple)→pin 0 (driven LOW). Outputs identical CSV on **USB @ 230400** and **Serial4 pin 17 @ 115200** for the ESP32.
+
 Reflash after firmware changes. If the visualizer cannot connect, close Serial Monitor and other apps using the COM port.
 
 ## ESP32 BLE bridge
@@ -135,7 +147,9 @@ pio run -t upload
 
 After flashing, **power-cycle** the ESP32 so BLE advertising is reliable. Device name: **Intune**. Close PlatformIO serial monitor before upload if the port is busy.
 
-Current firmware streams a detuned C-major test scale at 120 Hz (same CSV format as Teensy). Future: forward live Teensy UART over BLE without replacing the PC path.
+Firmware reads live CSV from the Teensy on **GPIO13 (D13) @ 115200 baud** and forwards each line over BLE (with newline — required by the Android parser). USB serial @ 115200 prints bridge stats every 5 s, e.g. `[bridge] uart_lines=600 ble_fwd=600 ble_client=yes`.
+
+**Troubleshooting:** If Android connects but shows no trace, confirm Teensy pin 17 toggles at 115200 (Serial4, not Serial8) and that `uart_lines` climbs on the ESP32 serial monitor.
 
 ## Android app
 
@@ -154,7 +168,6 @@ python visualizer.py --simulate
 
 ## Future ideas
 
-- ESP32 live UART bridge from Teensy (replace canned scale)
 - Daisy Seed + contact mic variant
 - SD card session logging
 - iPad app (iOS scaffold in `ios/`; needs Mac)

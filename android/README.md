@@ -31,17 +31,20 @@ Kotlin / Jetpack Compose app for **real-time cents-focused intonation practice**
 | Symptom | Fix |
 |---------|-----|
 | Scanning, won't connect | Power-cycle ESP32; close serial monitor; tap Connect again |
-| Connected, no samples | Ensure ESP32 is streaming (scale simulator or Teensy UART bridge) |
+| Connected, no samples | Confirm Teensy→ESP32 UART (pin 17→D13, GND); ESP32 serial should show `uart_lines` climbing; power-cycle ESP32 |
 | Drops after firmware flash | Unplug/replug ESP32 USB, then reconnect in app |
 
 ## Architecture
 
 ```
-ESP32 (Nordic UART BLE)  ──CSV notify @ 120 Hz──►  Intune Stream app
-     ▲
-     │ serial CSV (future: live Teensy bridge)
-Teensy 4.1 + mic
+Teensy 4.1 + INMP441 mic
+     │  USB Serial @ 230400 ──► PC visualizer (optional)
+     │  Serial4 TX pin 17 @ 115200
+     ▼
+ESP32 GPIO13 (D13) RX ──► BLE Nordic UART @ 120 Hz ──► Intune Stream app
 ```
+
+**Wiring:** Teensy pin 17 → ESP32 D13, common GND. Teensy 5V can power the ESP32. Do not wire to ESP32 RX0 (GPIO3).
 
 CSV format: `timestamp_ms,Note,Cents,probability,level`  
 Example: `12345,C4,+3.2,0.91,0.42` · Rests: `---`

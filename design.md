@@ -2,9 +2,9 @@
 
 **Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello**
 
-**Status**: Early prototype (June 2026)  
-**Current focus**: Debugging & mitigating octave errors on low strings (e.g. E3 reported as E4 by the Teensy YIN detector) using clean non-vibrato C major scale recordings + the PC reference tool. Simple history-based correction heuristic prototyped in Python and ported to firmware.  
-**Last major activity**: Pure YIN on device (FFT parallel path removed); added temporal octave snap in fresh-lock path + simulation harness in analyze_viola.py.
+**Status**: Working prototype (July 2026)  
+**Current focus**: Pitch accuracy on low strings (octave errors), Android/mobile polish, and contact-mic experiments.  
+**Last major activity**: Live Teensy → ESP32 UART → BLE → Android chain working. Key fixes: Teensy **Serial4** TX on pin 17 (not Serial8), 115200 baud UART link, ESP32 forwards CSV lines with trailing `\n` for Android parser.
 
 ---
 
@@ -18,29 +18,45 @@ Long-term: A complete practice companion with session logging, trend analysis, a
 
 ---
 
-## 2. Current System Architecture (v0.2)
+## 2. Current System Architecture (v0.3)
 
 ### 2.1 High-Level Components
 
 ```
-┌─────────────────────┐          Serial (115200)          ┌─────────────────────────────┐
-│   Teensy 4.1        │  ──────────────────────────────►  │   visualizer.py (Python)    │
-│   (Embedded)        │     timestamp,Note,Cents[,amp]    │   (Matplotlib GUI)          │
-│                     │                                   │                             │
-│  • Audio input      │                                   │  • Alto Clef staff          │
-│  • Pitch detection  │                                   │  • Color-coded trace        │
-│  • Note + cents out │                                   │  • Live stats               │
-│                     │                                   │  • Simulation mode          │
-└─────────────────────┘                                   └─────────────────────────────┘
+┌─────────────────────┐   USB Serial @ 230400    ┌──────────────────────────────┐
+│   Teensy 4.1        │ ───────────────────────► │  intune_viz.exe (raylib)     │
+│   INMP441 I²S mic   │   timestamp,Note,Cents │  Primary PC visualizer       │
+│   YIN pitch @ 120Hz │                          │  Alto/Bass/Treble, metronome │
+└─────────┬───────────┘                          └──────────────────────────────┘
+          │
+          │ Serial4 TX pin 17 @ 115200 (same CSV)
+          ▼
+┌─────────────────────┐   BLE Nordic UART @ 120Hz ┌──────────────────────────────┐
+│   ESP32             │ ────────────────────────► │  Intune Stream (Android)     │
+│   GPIO13 (D13) RX   │   notify per CSV line     │  Cents trace + Cents Focus   │
+└─────────────────────┘                           └──────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │  analyze_viola.py (Offline dev tool)                                                │
-│  • Loads real viola recordings (librosa)                                            │
-│  • Runs high-quality pyin pitch detection                                           │
-│  • Generates reference plots + cents deviation analysis                             │
-│  • Used to develop & validate algorithms before porting to embedded                 │
+│  • Loads real viola recordings (librosa pyin)                                       │
+│  • Reference plots + cents analysis before porting algorithms to Teensy             │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  visualizer/visualizer.py — legacy Python visualizer (PyQt5 + pyqtgraph)            │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.1.1 Teensy ↔ ESP32 wiring (verified)
+
+| Teensy 4.1 | ESP32 DevKit | Notes |
+|------------|--------------|-------|
+| Pin 17 (Serial4 **TX**) | D13 / GPIO13 (**RX**) | One-way data |
+| GND | GND | Required |
+| 5V | 5V | Optional — powers ESP32 from Teensy |
+
+**Pin gotcha:** On Teensy 4.1, pin 17 is **Serial4 TX**, not Serial8 (Serial8 TX = pin 35).  
+**ESP32 gotcha:** Do not use **RX0** (GPIO3) — USB-serial pin with boot-strapping concerns.
 
 ### 2.2 Serial Protocol (Current)
 
@@ -63,9 +79,13 @@ G3,8
 - Ignores lines without a valid note letter + number.
 
 **Update rate notes:**
-- Visualizer internally targets ~60 points/sec display.
-- Teensy outputs at fixed ~40 Hz.
-- 4th field in current output is the detector's confidence/probability (0–1). Visualizer ignores it for now.
+- Teensy outputs at fixed **120 Hz** (constant rate, including `---` rests).
+- PC raylib visualizer and Android chart both target ~120 Hz scroll.
+- 4th field = YIN confidence/probability (0–1). 5th field = peak level (volume gate).
+
+**Baud rates:**
+- Teensy USB → PC: **230400**
+- Teensy Serial4 → ESP32: **115200** (more reliable over jumper wire)
 
 ### 2.3 Visualizer Architecture (visualizer/visualizer.py)
 
@@ -98,27 +118,44 @@ G3,8
 
 ### 2.4 Teensy Firmware (teensy/src/main.cpp)
 
-**Current state (real mic input, June 2026):**
+**Current state (real mic input, July 2026):**
 - Using INMP441 I2S digital microphone module connected directly to Teensy 4.1.
+- INMP441 L/R select: purple wire → pin 0, driven **LOW** in firmware (left channel).
 - Primary detector: `AudioAnalyzeNoteFrequency` (YIN-based).
-- Output is strictly constant rate (~40 Hz) for continuous right-aligned scrolling (important for rhythm + rests).
+- **Dual output:** identical CSV on USB `Serial` @ 230400 and `Serial4` @ 115200 (TX = pin 17 → ESP32).
+- Output is strictly constant rate (**120 Hz**) for continuous right-aligned scrolling (important for rhythm + rests).
 - Rest/silence gating is done **purely on volume** (AudioAnalyzePeak level):
   - Above rest threshold: send fresh YIN if available (with its native prob) or hold the last good note (to avoid gaps from detector update rate). Low-conf periods appear faded.
   - Below rest threshold: explicit `---` rest marker + level.
   - A higher "trust fresh lock" threshold prevents accepting garbage new locks on the decaying tail of a note (avoids "stuck on random note" at end).
 - **Octave error mitigation (new)**: After the standard `12*log2(f/440)+69` + round conversion, a lightweight temporal check snaps exactly one-octave jumps when they match the previous stable MIDI note (inside the fresh-lock branch). This reuses the existing `last_*` hold state and is conservative for first-position low-string work. The raw `yinFreq` is still visible in DEBUG output.
-- Constant rate output (~40 Hz) for continuous right-aligned scrolling (newest on right), so rests are visible for rhythm practice.
+- Constant rate output (120 Hz) for continuous right-aligned scrolling (newest on right), so rests are visible for rhythm practice.
 - This lets you see raw detector output (wobbly/low conf = faded) on sounding notes while cleanly marking true low-volume/rest periods.
 - Full practical viola range supported in visualizer (C3–F6, with staff trimmed to first position in recent visualizer work).
 - Visualizer fades trace alpha based on reported confidence and has special rendering for `---` rests.
 
 **Recent focus:** Stabilizing real acoustic input from speaker tests, implementing volume-based (not confidence-based) rest gating, constant-rate data for rhythm visualization, and addressing octave doubling on lower notes (E3→E4 etc.) using clean C-major scale test material + PC reference.
 
-**PlatformIO config:** Standard `teensy41` + Arduino framework. (No extra libraries; FFT objects were previously wired in parallel but removed in favor of pure YIN + post-correction.)
+**PlatformIO config:** Standard `teensy41` + Arduino framework + Teensy Audio library.
 
-**PlatformIO config:** Standard `teensy41` + Arduino framework. No extra libraries declared yet.
+### 2.5 ESP32 Firmware (esp32/src/main.cpp)
 
-### 2.5 PC-First Analysis Tool (visualizer/analyze_viola.py)
+**Role:** UART → BLE bridge (no local pitch detection).
+
+- Reads CSV lines from Teensy on **Serial2**, RX = **GPIO13 (D13)** @ **115200 baud**.
+- Forwards each complete line over Nordic UART BLE notify.
+- **Must append `\n`** to each BLE payload — Android `BleStreamClient` splits on newlines (worked with old scale simulator; broke briefly when bridge stripped `\n`).
+- USB `Serial` @ 115200 prints `[bridge] uart_lines=… ble_fwd=… ble_client=…` every 5 s for debugging.
+- BLE device name: **Intune**.
+
+### 2.6 Android App (android/)
+
+- Kotlin / Jetpack Compose **Intune Stream** app.
+- Connects to ESP32 Nordic UART Service; parses same CSV as PC visualizer.
+- `BleStreamClient.kt` — BLE scan/GATT/notify + line reassembly.
+- `PitchCsvParser` — flexible CSV parse; also accepts a complete line without trailing `\n` as fallback.
+
+### 2.7 PC-First Analysis Tool (visualizer/analyze_viola.py)
 
 Purpose: Develop and characterize pitch detection algorithms against **real viola recordings** before committing to embedded constraints.
 
@@ -141,7 +178,7 @@ Reference recordings live outside the repo (`C:\Code\reference_audio\viola\...`)
 | Octave errors (low strings) | Mitigated by snap (E3 etc. now prefer previous stable octave) | Correct on clean signals  | Eliminate for first-position low notes |
 | Vibrato handling        | Basic (via hold + YIN prob)   | Good (pyin)               | Must tolerate musical vibrato        |
 | Attack / bow noise      | Volume gate + fresh-lock trust threshold | Visible in plots          | Major challenge                      |
-| Latency                 | ~25 ms output interval        | Offline                   | < 30–40 ms end-to-end preferred      |
+| Latency                 | ~8 ms output interval (120 Hz)| Offline                   | < 30–40 ms end-to-end preferred      |
 | CPU / RAM on Teensy 4.1 | Comfortable (light correction) | N/A                       | Must stay lightweight                |
 
 **Open question:** Will we stay with YIN + simple history snap, or bring back a lightweight parallel FFT (as in earlier git history) for explicit lowest-partial validation on problematic low notes? Prototype improvements in `analyze_viola.py` first.
@@ -172,7 +209,7 @@ Possible approaches for rhythm:
 **Phase 2**
 - Daisy Seed version (better audio hardware, more DSP power?)
 - SD card logging of sessions
-- Wireless (BLE) version for iPad / tablet
+- iOS app (BLE scaffold exists in `ios/`; Android path proven)
 
 **Phase 3**
 - Dedicated device or integration with existing practice tools
@@ -189,27 +226,26 @@ Possible approaches for rhythm:
 
 ---
 
-## 7. Current Priorities & Open Questions (as of last activity)
+## 7. Current Priorities & Open Questions (July 2026)
 
-From git history and code comments, recent focus has been:
-- Robust, developer-friendly visualizer (simulation + real hardware paths)
-- PC-first algorithm development loop (analyze_viola.py)
-- Better note transition handling in the Teensy FFT tracker ("Better Transitions" in banner)
+**Recently completed:**
+- Live wireless chain: Teensy mic → Serial4 UART → ESP32 → BLE → Android
+- PC raylib visualizer + multi-instrument clefs
+- INMP441 I2S input with volume-based rest gating
 
-**Likely next areas (to be confirmed with user):**
-- Real audio input path on Teensy (I2S mic or Audio Shield) — contact/piezo preferred for low-string fundamentals.
-- Improved pitch tracking algorithm (octave error mitigation on low strings using the clean C major scale + analyze_viola.py simulation harness; history snap implemented; hybrid FFT validation as follow-up).
-- Adding amplitude / confidence / "note stability" to the data model and visualization (raw prob already in DEBUG and serial; visualizer can surface it more).
+**Likely next areas:**
+- Octave error mitigation on low strings (history snap in firmware; validate with real playing + analyze_viola.py)
+- Contact/piezo mic vs INMP441 for low-string fundamentals
+- Android polish: staff view, confidence/level in UI, reconnect robustness
+- iOS app beyond BLE scaffold
 - Rhythm detection prototype
-- Better handling of note changes / glissandi in the visualizer
-- Export / session recording features (basic debug CSV export added May 2026)
+- Session recording / SD card logging
 
-**Specific open questions to resolve:**
-- What microphone / pickup hardware are we targeting first? (INMP441 works but low-end fundamentals can be weak → octave jumps.)
-- How aggressive should the octave snap be (current: exact ±12 from last stable)? Test on the user's scale + live first-position playing.
-- Do we want the Teensy to also detect rhythm onsets, or do rhythm detection on the host?
-- Target maximum acceptable latency for "feels real-time"?
-- Should the visualizer support multiple clefs/instruments soon, or stay viola-only for now?
+**Specific open questions:**
+- Contact mic hardware and placement for viola low strings?
+- How aggressive should octave snap be (current: exact ±12 from last stable)?
+- Rhythm on Teensy vs host-side detection?
+- MTU negotiation on BLE for fewer chunked notifies at 120 Hz?
 
 ---
 
@@ -221,14 +257,19 @@ intune/
 ├── design.md                     ← this file
 ├── teensy/
 │   ├── platformio.ini
-│   └── src/main.cpp              (FFT test harness)
+│   └── src/main.cpp              (INMP441 YIN pitch + USB + Serial4 output)
+├── esp32/
+│   ├── platformio.ini
+│   └── src/
+│       ├── main.cpp              (UART → BLE bridge)
+│       ├── ble_uart.cpp
+│       └── ble_uart.h
+├── android/                      (Intune Stream — Kotlin / Compose)
+├── ios/                          (BLE scaffold — needs Mac / Xcode)
+├── visualizer_raylib/            (primary PC visualizer — C++ / raylib)
 ├── visualizer/
-│   ├── visualizer.py             (main app)
-│   ├── visualizer_original.py    (backup of pre-refactor version)
+│   ├── visualizer.py             (legacy Python visualizer)
 │   ├── analyze_viola.py          (offline reference analysis)
-│   ├── requirements.txt
-│   ├── pyproject.toml
-│   ├── README.md
 │   └── plots/                    (gitignored)
 └── .gitignore
 ```
@@ -237,31 +278,34 @@ intune/
 
 ## 9. How to Run (Quick Reference)
 
-**Visualizer (simulation — no hardware):**
-```bash
-cd visualizer
-pip install -r requirements.txt
-python visualizer.py --simulate --debug
+**PC visualizer (primary):**
+```powershell
+cd visualizer_raylib\build\Release
+.\intune_viz.exe --simulate
+.\intune_viz.exe --port COM3    # 230400 baud
 ```
 
-**With hardware:**
+**Legacy Python visualizer:**
 ```bash
-python visualizer.py --port COM3 --baud 115200
+cd visualizer && pip install -r requirements.txt
+python visualizer.py --simulate
+python visualizer.py --port COM3 --baud 230400
+```
+
+**Teensy + ESP32 + Android (wireless):**
+1. Wire Teensy pin 17 → ESP32 D13, GND (and 5V if desired)
+2. Flash `teensy/` and `esp32/` via PlatformIO
+3. Power-cycle ESP32; open Android app → Connect
+
+**ESP32 bridge debug (USB serial @ 115200):**
+```
+[bridge] uart_lines=600 ble_fwd=600 ble_client=yes last="12345,C4,+3.2,0.91,0.42"
 ```
 
 **Analyze reference recordings:**
 ```bash
 python analyze_viola.py
-# Edit AUDIO_PATH at top of file for different takes
 ```
-
-**Teensy:**
-- PlatformIO in `teensy/` folder
-- Currently runs self-test tone generator
-
----
-
-**Next step for this document:** Fill in hardware input details, concrete algorithm choices, and prioritized roadmap once the immediate focus is confirmed.
 
 ---
 
