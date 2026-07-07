@@ -46,20 +46,34 @@ fun StaffTraceCanvas(
             style = Stroke(width = 1.5f),
         )
 
-        val staffSpacePx = kotlin.math.abs(
-            pitchToY(instrument.staffLines[2]) - pitchToY(instrument.staffLines[3]),
-        )
-        val clefCenter = Offset(
-            x = StaffChartGeometry.GUTTER * 0.46f,
-            y = pitchToY(instrument.clefAnchor),
-        )
-        ClefDrawer.draw(
-            scope = this,
-            instrument = instrument,
-            center = clefCenter,
-            staffSpacePx = staffSpacePx,
-            color = IntuneColors.TextPrimary.copy(alpha = 0.72f),
-        )
+        val clefPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(210, 58, 68, 80)
+            isAntiAlias = true
+        }
+        val clefAnchorY = pitchToY(instrument.clefAnchor)
+        val nativeCanvas = drawContext.canvas.nativeCanvas
+        if (instrument.clefSymbol != null) {
+            clefPaint.textSize = 34.sp.toPx()
+            nativeCanvas.drawText(
+                instrument.clefSymbol,
+                6f,
+                clefAnchorY + clefPaint.textSize * 0.32f,
+                clefPaint,
+            )
+        } else {
+            clefPaint.textSize = 11.sp.toPx()
+            clefPaint.typeface = android.graphics.Typeface.create(
+                android.graphics.Typeface.DEFAULT,
+                android.graphics.Typeface.BOLD,
+            )
+            drawVerticalClefLabel(
+                canvas = nativeCanvas,
+                text = "alto",
+                centerX = StaffChartGeometry.GUTTER * 0.42f,
+                centerY = clefAnchorY,
+                paint = clefPaint,
+            )
+        }
 
         val labelPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(140, 90, 100, 112)
@@ -189,5 +203,24 @@ fun StaffTraceCanvas(
                 }
             }
         }
+    }
+}
+
+/** Stacked letters in the gutter — readable alto clef substitute on Android. */
+private fun drawVerticalClefLabel(
+    canvas: android.graphics.Canvas,
+    text: String,
+    centerX: Float,
+    centerY: Float,
+    paint: android.graphics.Paint,
+) {
+    val lineHeight = paint.textSize * 1.15f
+    val totalHeight = text.length * lineHeight
+    var y = centerY - totalHeight * 0.5f + paint.textSize * 0.85f
+    for (ch in text) {
+        val glyph = ch.toString()
+        val x = centerX - paint.measureText(glyph) * 0.5f
+        canvas.drawText(glyph, x, y, paint)
+        y += lineHeight
     }
 }

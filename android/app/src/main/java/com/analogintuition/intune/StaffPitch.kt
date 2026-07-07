@@ -15,6 +15,8 @@ object StaffPitch {
         val staffLines: FloatArray,
         /** Pitch Y where the clef is anchored (middle line for alto, etc.). */
         val clefAnchor: Float,
+        /** SMuFL clef glyph — null for viola (use vertical "alto" label; Unicode alto misrenders). */
+        val clefSymbol: String? = null,
     ) {
         Viola(
             label = "Viola",
@@ -22,6 +24,7 @@ object StaffPitch {
             pitchMax = 7.6f,
             staffLines = floatArrayOf(2.4f, 3.2f, 4.0f, 4.8f, 5.6f),
             clefAnchor = 4.0f,
+            clefSymbol = null,
         ),
         Cello(
             label = "Cello",
@@ -29,6 +32,7 @@ object StaffPitch {
             pitchMax = 4.0f,
             staffLines = floatArrayOf(0.0f, 0.4f, 1.6f, 2.4f, 3.2f),
             clefAnchor = 2.4f,
+            clefSymbol = "\uD834\uDD22", // 𝄢 bass
         ),
         Violin(
             label = "Violin",
@@ -36,6 +40,7 @@ object StaffPitch {
             pitchMax = 8.4f,
             staffLines = floatArrayOf(4.8f, 5.6f, 6.4f, 7.2f, 8.0f),
             clefAnchor = 5.6f,
+            clefSymbol = "\uD834\uDD1E", // 𝄞 treble
         ),
     }
 
