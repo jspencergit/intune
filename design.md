@@ -3,8 +3,8 @@
 **Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello**
 
 **Status**: Working prototype (July 2026)  
-**Current focus**: Pitch accuracy on low strings (octave errors), Android/mobile polish, and contact-mic experiments.  
-**Last major activity**: Live Teensy → ESP32 UART → BLE → Android chain working. Key fixes: Teensy **Serial4** TX on pin 17 (not Serial8), 115200 baud UART link, ESP32 forwards CSV lines with trailing `\n` for Android parser.
+**Current focus**: **Real musical audio** for pitch validation (beyond synthetic scales); optional YIN+harmonic hybrid for low-string octaves; contact mic later.  
+**Last major activity**: Custom **overlapping-window YIN** on Teensy (v3); COM3 test harness + multi-volume suites; live chain Teensy → ESP32 → BLE → Android confirmed after INMP441 **SD (pin 8)** wire repair. Synthetic scales/detune mostly green; soft pure C3 cents still weak by SNR.
 
 ---
 
@@ -26,7 +26,7 @@ Long-term: A complete practice companion with session logging, trend analysis, a
 ┌─────────────────────┐   USB Serial @ 230400    ┌──────────────────────────────┐
 │   Teensy 4.1        │ ───────────────────────► │  intune_viz.exe (raylib)     │
 │   INMP441 I²S mic   │   timestamp,Note,Cents │  Primary PC visualizer       │
-│   YIN pitch @ 120Hz │                          │  Alto/Bass/Treble, metronome │
+│   custom YIN @ 120Hz│                          │  Alto/Bass/Treble, metronome │
 └─────────┬───────────┘                          └──────────────────────────────┘
           │
           │ Serial4 TX pin 17 @ 115200 (same CSV)
@@ -116,27 +116,23 @@ G3,8
 - **Crosshair inspection**: Pause the trace, then hover mouse over the plot to see exact time + note + cents + confidence at any point (very useful for measuring glitch duration)
 - Keyboard: Space/P, C, E (export), R, Q/Esc
 
-### 2.4 Teensy Firmware (teensy/src/main.cpp)
+### 2.4 Teensy Firmware (teensy/src/)
 
-**Current state (real mic input, July 2026):**
-- Using INMP441 I2S digital microphone module connected directly to Teensy 4.1.
-- INMP441 L/R select: purple wire → pin 0, driven **LOW** in firmware (left channel).
-- Primary detector: `AudioAnalyzeNoteFrequency` (YIN-based).
+**Current state (real mic input, July 2026 — pitch v3):**
+- INMP441 I2S on Teensy 4.1: **SCK=21, WS=20, SD=8, L/R=pin0 LOW, VDD=3.3V**. (Loose **SD/pin 8** wire caused total digital silence — scope at mic can look fine while MCU sees zeros.)
+- Primary detector: **custom overlapping-window YIN** (`pitch_detector.*`), not stock `AudioAnalyzeNoteFrequency`.
+  - Window ~2048 samples (~46 ms), hop ~256 (~5.8 ms); analysis in `loop()`, not audio ISR.
+  - Constrained lag search for viola/violin range (~120–2800 Hz).
+  - Classic first-min CMND; continuity only for ~octave flips; careful 2τ octave-down only (no 3τ/4τ walks).
 - **Dual output:** identical CSV on USB `Serial` @ 230400 and `Serial4` @ 115200 (TX = pin 17 → ESP32).
-- Output is strictly constant rate (**120 Hz**) for continuous right-aligned scrolling (important for rhythm + rests).
-- Rest/silence gating is done **purely on volume** (AudioAnalyzePeak level):
-  - Above rest threshold: send fresh YIN if available (with its native prob) or hold the last good note (to avoid gaps from detector update rate). Low-conf periods appear faded.
-  - Below rest threshold: explicit `---` rest marker + level.
-  - A higher "trust fresh lock" threshold prevents accepting garbage new locks on the decaying tail of a note (avoids "stuck on random note" at end).
-- **Octave error mitigation (new)**: After the standard `12*log2(f/440)+69` + round conversion, a lightweight temporal check snaps exactly one-octave jumps when they match the previous stable MIDI note (inside the fresh-lock branch). This reuses the existing `last_*` hold state and is conservative for first-position low-string work. The raw `yinFreq` is still visible in DEBUG output.
-- Constant rate output (120 Hz) for continuous right-aligned scrolling (newest on right), so rests are visible for rhythm practice.
-- This lets you see raw detector output (wobbly/low conf = faded) on sounding notes while cleanly marking true low-volume/rest periods.
-- Full practical viola range supported in visualizer (C3–F6, with staff trimmed to first position in recent visualizer work).
-- Visualizer fades trace alpha based on reported confidence and has special rendering for `---` rests.
+- Output strictly **120 Hz**, including `---` rests (rhythm + scroll UX).
+- Rest gating on **volume** (peak + detector RMS); hold last good ≤~180 ms; clear hold on true rest.
+- **Octave snap:** exact ±12 MIDI vs last stable note after MIDI conversion.
+- PC test harness: `teensy/tools/` (play_and_capture, edge/extensive/minor suites). Synthetic scales + volume ladders largely pass; soft pure C3 cents degrade by SNR.
 
-**Recent focus:** Stabilizing real acoustic input from speaker tests, implementing volume-based (not confidence-based) rest gating, constant-rate data for rhythm visualization, and addressing octave doubling on lower notes (E3→E4 etc.) using clean C-major scale test material + PC reference.
+**Docs:** `teensy/REPORT.md` (v3 results), `teensy/DEBUG_PROGRESSION.md` (I2S silence debug).
 
-**PlatformIO config:** Standard `teensy41` + Arduino framework + Teensy Audio library.
+**PlatformIO:** `teensy41` + Arduino + Teensy Audio library.
 
 ### 2.5 ESP32 Firmware (esp32/src/main.cpp)
 
@@ -171,17 +167,19 @@ Reference recordings live outside the repo (`C:\Code\reference_audio\viola\...`)
 
 ## 3. Pitch Detection — Current vs. Target
 
-| Aspect                  | Current Teensy (YIN + snap)   | PC Reference (pyin)       | Target for Real Use                  |
+| Aspect                  | Current Teensy (v3)           | PC Reference (pyin)       | Target for Real Use                  |
 |-------------------------|-------------------------------|---------------------------|--------------------------------------|
-| Algorithm               | Audio lib YIN + temporal octave snap on exact ±12 jumps (history-based) | Probabilistic YIN (librosa) | Hybrid (YIN or custom + low-partial validation from light FFT) or improved YIN params |
-| Input                   | Real mic (INMP441 I2S) + clean C maj scale test signals | Real viola recordings (incl. C3 non-vibrato + user YouTube scales) | Contact mic / piezo on instrument    |
-| Octave errors (low strings) | Mitigated by snap (E3 etc. now prefer previous stable octave) | Correct on clean signals  | Eliminate for first-position low notes |
-| Vibrato handling        | Basic (via hold + YIN prob)   | Good (pyin)               | Must tolerate musical vibrato        |
-| Attack / bow noise      | Volume gate + fresh-lock trust threshold | Visible in plots          | Major challenge                      |
-| Latency                 | ~8 ms output interval (120 Hz)| Offline                   | < 30–40 ms end-to-end preferred      |
-| CPU / RAM on Teensy 4.1 | Comfortable (light correction) | N/A                       | Must stay lightweight                |
+| Algorithm               | Custom overlapping YIN + ±12 snap + range clamp | Probabilistic YIN (librosa) | YIN primary + optional light harmonic/HPS validator on low conf / ±12 |
+| Input                   | INMP441 air mic + **synthetic** scales (speaker) | Sparse real viola files under `C:\Code\reference_audio\…` | **Real bowed samples** + eventual contact mic |
+| Validation so far       | Strong on synthetic major/minor, detune, volume ladders | Offline plots | Must re-score against real music corpus |
+| Octave errors (low strings) | Snap helps; soft pure C3 still weak cents | Better on clean library tones | First-position low strings under bow |
+| Vibrato / bow / attacks | Untested on real playing at scale | Visible in pyin plots     | Must tolerate musical vibrato + bow noise |
+| Latency                 | ~46 ms analysis window; 120 Hz stream | Offline                   | < 30–40 ms end-to-end preferred      |
+| CPU / RAM               | Comfortable on T4.1           | N/A                       | Hybrid must stay light               |
 
-**Open question:** Will we stay with YIN + simple history snap, or bring back a lightweight parallel FFT (as in earlier git history) for explicit lowest-partial validation on problematic low notes? Prototype improvements in `analyze_viola.py` first.
+**Industry alignment:** No single algorithm wins on all material (YIN vs autocorrelation vs FFT/HPS). Context is monophonic **string practice** — keep YIN; add harmonic referee only where we fail.
+
+**Open question:** Prototype hybrid (YIN f0 + light FFT/HPS partial check) in `analyze_viola.py` **on real recordings first**, then port only if metrics improve on low strings.
 
 ---
 
@@ -226,26 +224,41 @@ Possible approaches for rhythm:
 
 ---
 
-## 7. Current Priorities & Open Questions (July 2026)
+## 7. Priorities / TODO (July 2026)
 
-**Recently completed:**
-- Live wireless chain: Teensy mic → Serial4 UART → ESP32 → BLE → Android
-- PC raylib visualizer + multi-instrument clefs
-- INMP441 I2S input with volume-based rest gating
+### Done (keep for context)
+- [x] Teensy → Serial4 → ESP32 → BLE → Android live path
+- [x] PC raylib visualizer + multi-instrument clefs
+- [x] INMP441 I2S + volume-based rest gating + 120 Hz CSV
+- [x] Custom overlapping YIN (`pitch_detector.*`) + suite harness under `teensy/tools/`
+- [x] Synthetic scale / detune / multi-volume COM3 validation (after SD wire fix)
 
-**Likely next areas:**
-- Octave error mitigation on low strings (history snap in firmware; validate with real playing + analyze_viola.py)
-- Contact/piezo mic vs INMP441 for low-string fundamentals
-- Android polish: staff view, confidence/level in UI, reconnect robustness
-- iOS app beyond BLE scaffold
-- Rhythm detection prototype
-- Session recording / SD card logging
+### Now — pitch quality on **real music** (next gate)
+- [ ] **Build a real-sample corpus** (highest priority for pitch work)
+  - Sources: own viola/violin recordings; existing `C:\Code\reference_audio\viola\…`; short clips of open strings, first-position scales, slow etudes, vibrato on/off, soft/loud dynamics
+  - Prefer **wav/flac** (gitignored media lives outside repo or under ignored paths)
+  - Label metadata: instrument, note range, vibrato y/n, mic type (air vs contact), file list in a small manifest (e.g. `docs/sample_manifest.md` or `reference_audio/README.md` outside git)
+- [ ] Extend `analyze_viola.py` (or new script) to **batch real files**: pyin ground truth vs Teensy-sim / offline YIN; report octave-error rate + cents MAE
+- [ ] Capture **live Teensy** on real playing (COM3 or Android) while recording reference audio for A/B
+- [ ] Catalog failure modes: low C/G, attacks, note changes, vibrato width, two-string rings
 
-**Specific open questions:**
-- Contact mic hardware and placement for viola low strings?
-- How aggressive should octave snap be (current: exact ±12 from last stable)?
-- Rhythm on Teensy vs host-side detection?
-- MTU negotiation on BLE for fewer chunked notifies at 120 Hz?
+### Next — algorithm (only driven by real-sample metrics)
+- [ ] Prototype **YIN + light harmonic / HPS referee** offline first (`analyze_viola.py`)
+- [ ] Port hybrid to Teensy **only if** low-string octave rate improves without hurting latency/CPU
+- [ ] Revisit octave snap aggressiveness using real data (not only synthetic)
+- [ ] Soft low-string SNR: contact/piezo experiment vs air INMP441
+
+### Product / platform (parallel, lower than real-sample pitch)
+- [ ] Android polish: staff view, confidence/level UI, reconnect robustness
+- [ ] iOS beyond BLE scaffold
+- [ ] Rhythm detection prototype (still aspirational)
+- [ ] Session logging (host-side first; SD card later)
+
+### Open questions
+- Best short list of “must pass” real excerpts before claiming production pitch quality?
+- Contact mic hardware + placement for viola C string?
+- Hybrid referee only below G3 / middling YIN conf, or always-on light check?
+- Rhythm on Teensy vs host?
 
 ---
 
@@ -254,23 +267,22 @@ Possible approaches for rhythm:
 ```
 intune/
 ├── README.md
-├── design.md                     ← this file
+├── design.md                     ← this file (incl. TODO §7)
 ├── teensy/
 │   ├── platformio.ini
-│   └── src/main.cpp              (INMP441 YIN pitch + USB + Serial4 output)
-├── esp32/
-│   ├── platformio.ini
-│   └── src/
-│       ├── main.cpp              (UART → BLE bridge)
-│       ├── ble_uart.cpp
-│       └── ble_uart.h
-├── android/                      (Intune Stream — Kotlin / Compose)
-├── ios/                          (BLE scaffold — needs Mac / Xcode)
-├── visualizer_raylib/            (primary PC visualizer — C++ / raylib)
+│   ├── REPORT.md / DEBUG_PROGRESSION.md
+│   ├── src/
+│   │   ├── main.cpp              (CSV output, gating, octave snap)
+│   │   ├── pitch_detector.cpp    (overlapping YIN)
+│   │   └── pitch_detector.h
+│   └── tools/                    (COM3 test harness; local results gitignored)
+├── esp32/                        (UART → BLE bridge)
+├── android/                      (Intune Stream)
+├── ios/                          (BLE scaffold)
+├── visualizer_raylib/            (primary PC visualizer)
 ├── visualizer/
-│   ├── visualizer.py             (legacy Python visualizer)
-│   ├── analyze_viola.py          (offline reference analysis)
-│   └── plots/                    (gitignored)
+│   ├── analyze_viola.py          (offline pyin reference)
+│   └── …
 └── .gitignore
 ```
 
