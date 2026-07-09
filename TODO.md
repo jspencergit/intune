@@ -31,7 +31,8 @@ Living checklist. Context and architecture: **[design.md](design.md)**.
 
 ## Later / parallel
 
-- [ ] Android polish (staff, conf/level, reconnect)
+- [ ] Android UI polish — use `android/scripts/` (ADB screenshots + scale play) for Grok review
+- [ ] Android: staff/cents UX, conf/level, reconnect
 - [ ] iOS beyond BLE scaffold
 - [ ] Rhythm prototype
 - [ ] Session logging

@@ -76,3 +76,20 @@ Key sources:
 ## Build from command line
 
 Gradle wrapper is not checked in; use Android Studio **Build → Make Project**, or generate a wrapper from the IDE if you need CLI builds.
+
+## UI feedback loop (Grok + USB)
+
+Plug in the phone (USB debugging), keep the app connected over BLE, then from `android/scripts/`:
+
+```powershell
+# One screenshot of the current screen
+.\capture-ui.ps1 -Label current
+
+# Play a scale through the speaker and auto-capture mid-trace
+.\play-and-capture.ps1 -Label cents_portrait
+
+# Guided multi-mode session (you switch cents/staff and rotate when prompted)
+.\run-ui-session.ps1
+```
+
+Screenshots land in `android/screenshots/` (gitignored). Details: [`scripts/README.md`](scripts/README.md).

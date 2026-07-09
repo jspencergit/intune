@@ -17,6 +17,15 @@ object IntuneColors {
     val TuneMarker = Color(0xFF389860)
     val Playhead = Color(0xFF2A70B8)
     val Accent = Color(0xFF2A70B8)
+    /** Text/icons on solid Accent buttons */
+    val OnAccent = Color(0xFFFFFFFF)
+
+    // Manuscript-style staff (warmer than UI chrome)
+    val StaffPaper = Color(0xFFF7F1E4)
+    val StaffPaperEdge = Color(0xFFD8CFC0)
+    val StaffLine = Color(0xFF2C3340)
+    val StaffLedger = Color(0xFF6A7380)
+    val StaffGutter = Color(0xFFEDE6D8)
 
     fun centsColor(cents: Float, inTuneThreshold: Float): Color {
         if (kotlin.math.abs(cents) < inTuneThreshold) return InTune
