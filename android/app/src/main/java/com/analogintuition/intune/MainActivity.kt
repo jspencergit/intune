@@ -127,9 +127,11 @@ private fun IntuneScreen(
     val isLandscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val displayNow = if (viewModel.paused) viewModel.pausedAtMs else viewModel.displayNowMs
-    val latest = bleState.samples.lastOrNull { !it.isRest } ?: bleState.samples.lastOrNull()
+    // While paused, use the freeze snapshot so live BLE cannot purge the trace.
+    val chartSamples = viewModel.displaySamples(bleState.samples)
+    val latest = chartSamples.lastOrNull { !it.isRest } ?: chartSamples.lastOrNull()
     val focusSample = if (viewModel.paused) {
-        bleState.samples.nearestTo(displayNow - viewModel.scrubOffsetMs) ?: latest
+        chartSamples.nearestTo(displayNow - viewModel.scrubOffsetMs) ?: latest
     } else {
         latest
     }
@@ -151,7 +153,7 @@ private fun IntuneScreen(
         } else if (isLandscape) {
             LandscapePracticeLayout(
                 focusSample = focusSample,
-                samples = bleState.samples,
+                samples = chartSamples,
                 displayNowMs = displayNow,
                 windowSec = viewModel.windowSec,
                 inTuneThreshold = viewModel.inTuneThreshold,
@@ -174,7 +176,7 @@ private fun IntuneScreen(
         } else {
             PortraitPracticeLayout(
                 focusSample = focusSample,
-                samples = bleState.samples,
+                samples = chartSamples,
                 displayNowMs = displayNow,
                 windowSec = viewModel.windowSec,
                 inTuneThreshold = viewModel.inTuneThreshold,

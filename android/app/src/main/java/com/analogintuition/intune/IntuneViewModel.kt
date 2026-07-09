@@ -24,6 +24,13 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
     var traceViewMode by mutableStateOf(TraceViewMode.Cents)
     var staffInstrument by mutableStateOf(StaffPitch.Instrument.Viola)
 
+    /**
+     * Samples frozen at Pause. Live BLE keeps appending and would otherwise drop
+     * history from the ring buffer (~20s), making the trace vanish while paused.
+     */
+    var frozenSamples by mutableStateOf<List<PitchSample>?>(null)
+        private set
+
     fun toggleTraceView() {
         traceViewMode = when (traceViewMode) {
             TraceViewMode.Cents -> TraceViewMode.Staff
@@ -52,9 +59,22 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
         if (!paused) {
             pausedAtMs = currentDisplayMs
             scrubOffsetMs = 0f
+            // Snapshot so live stream cannot age the review window off the chart.
+            frozenSamples = bleClient.state.value.samples.toList()
+            paused = true
+        } else {
+            frozenSamples = null
+            paused = false
+            // Jump clock to live so Play does not scrub through a gap.
+            if (bleClient.state.value.connected) {
+                displayNowMs = bleClient.hostNowMs()
+            }
         }
-        paused = !paused
     }
+
+    /** Samples for chart + inspect: frozen snapshot while paused, else live BLE. */
+    fun displaySamples(live: List<PitchSample>): List<PitchSample> =
+        if (paused) frozenSamples ?: live else live
 
     fun setScrubOffset(offsetMs: Float) {
         if (!paused) return

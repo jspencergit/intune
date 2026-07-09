@@ -30,7 +30,8 @@ class BleStreamClient(context: Context) {
         private val TX_UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val TARGET_NAME = "Intune"
-        private const val MAX_SAMPLES = 2400
+        // ~40s at 120 Hz — covers max 24s window + pause headroom before snapshot
+        private const val MAX_SAMPLES = 4800
         private const val SCAN_TIMEOUT_MS = 15_000L
     }
 
