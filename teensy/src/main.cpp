@@ -1,57 +1,39 @@
 #include <Arduino.h>
 #include <Audio.h>
 #include <math.h>
+#include <string.h>
+
+#include "pitch_detector.h"
 
 /*
- * INMP441 I2S Microphone Input - Real Audio Version
+ * Intune Teensy Pitch Detection v3
  *
- * Hardware: AITRIP INMP441 module (your wiring colors)
+ * Custom overlapping-window YIN (pitch_detector.*) for viola/violin.
+ * Constant 120 Hz CSV on USB Serial + Serial4 (ESP32 BLE bridge).
  *
- * Pin connections to Teensy 4.1:
- *   VDD   (red)   → 3.3V pin on Teensy
- *   GND   (black) → Any GND pin on Teensy
- *   SCK   (white) → Pin 21  (BCLK)
- *   WS    (grey)  → Pin 20  (LRCLK / WS)
- *   SD    (brown) → Pin 8   (DIN - Data In)
- *   L/R   (purple)→ Pin 0   (driven LOW in firmware — same as GND, selects Left channel)
+ * Format: timestamp_ms,Note,Cents,probability,level
  *
- * Power: INMP441 is 3.3V only. Do NOT connect VDD to 5V.
+ * Hardware (INMP441):
+ *   VDD→3.3V  GND→GND  SCK→21  WS→20  SD→8  L/R→pin0 LOW
+ *   Serial4 TX pin 17 @ 115200 → ESP32 UART RX
  */
 
-/*
- * Intune Teensy Pitch Detection - Real I2S Mic Version
- *
- * Primary detector: AudioAnalyzeNoteFrequency (YIN-based).
- *
- * Output is constant rate (120 Hz — matched to visualizer DEVICE_HZ).
- * Gating for "rest" (--- marker) is done purely on mic level/volume.
- * When volume is sufficient, we output whatever the YIN detector reports
- * (including periods of low confidence, which the visualizer will show faded).
- *
- * Serial output format (USB + ESP32 UART bridge):
- *   timestamp,Note,Cents,probability,level
- *
- * Outputs (same CSV on both):
- *   - USB Serial @ 230400  → PC visualizer
- *   - Serial4 TX pin 17 @ 115200 → ESP32 GPIO16 or D13/GPIO13 (RX) → BLE → Android
- *
- * To run:
- *   - Flash to Teensy 4.1 with INMP441 wired (see pinout above)
- *   - intune_viz.exe --port COMx
- */
+AudioInputI2S        i2s1;
+AudioAnalyzePitchYin pitch1;
+AudioAnalyzePeak     peak1;
 
-AudioInputI2S             i2s1;          // Real microphone input
-AudioAnalyzeNoteFrequency notefreq1;
-AudioAnalyzePeak          peak1;           // For volume-based rest gating
-
-AudioConnection patchCord1(i2s1, 0, notefreq1, 0);
+AudioConnection patchCord1(i2s1, 0, pitch1, 0);
 AudioConnection patchCord2(i2s1, 0, peak1, 0);
 
 const char* noteToName(int midi);
 
-constexpr uint8_t MIC_LR_SELECT_PIN = 0;  // Teensy 4.1 pin 0 — drive LOW for INMP441 left channel
-constexpr uint32_t USB_BAUD = 230400;    // PC visualizer
-constexpr uint32_t ESP32_BAUD = 115200;  // jumper wire to ESP32 — more reliable than 230400
+constexpr uint8_t MIC_LR_SELECT_PIN = 0;
+constexpr uint32_t USB_BAUD = 230400;
+constexpr uint32_t ESP32_BAUD = 115200;
+
+// Viola + violin practical range with margin
+constexpr float FMIN_HZ = 120.0f;
+constexpr float FMAX_HZ = 2800.0f;
 
 static void emitSampleLine(uint32_t ts_ms, const char* note, float cents, float prob, float level) {
   char line[96];
@@ -63,101 +45,115 @@ static void emitSampleLine(uint32_t ts_ms, const char* note, float cents, float 
 
 void setup() {
   Serial.begin(USB_BAUD);
-  Serial4.begin(ESP32_BAUD);  // TX4 = pin 17 → ESP32 UART RX (GPIO16 preferred, GPIO13/D13 ok)
-  delay(1500);
+  Serial4.begin(ESP32_BAUD);
+  delay(800);
 
-  // INMP441 L/R: GND = left channel, VDD = right channel. Pin 0 held LOW replaces a GND tie.
   pinMode(MIC_LR_SELECT_PIN, OUTPUT);
   digitalWrite(MIC_LR_SELECT_PIN, LOW);
 
-  AudioMemory(80);   // For I2S mic + NoteFrequency + Peak
-  
-  Serial.println("=== Intune - Real INMP441 I2S Microphone Input ===");
-  Serial.println("=== Wiring: VDD=3.3V, GND=GND, SCK=21, WS=20, SD=8, L/R=Pin0(LOW), ESP32=Pin17(TX4) ===");
-  Serial.println("=== Constant-rate output (120 Hz). Volume gate only: above rest_thresh send YIN (or hold last good); below = '---' rest. ===");
-  Serial.println("=== Two thresholds: TRUST_FRESH_LOCK (0.005) to accept new locks, REST_THRESHOLD (0.001) for rests. ===");
-  
-  // NoteFrequency (YIN-based). Low threshold so we get readings even on softer signals.
-  // Gating is done purely on volume (level) below.
-  notefreq1.begin(0.15);
+  AudioMemory(60);
+
+  pitch1.setRange(FMIN_HZ, FMAX_HZ);
+  pitch1.begin(0.12f);
+
+  Serial.println("=== Intune pitch v3: overlapping YIN (viola/violin) ===");
+  Serial.println("=== USB 230400 + Serial4 115200 pin17 | 120 Hz CSV ===");
 }
 
 void loop() {
   static uint32_t nextOutputUs = 0;
-  constexpr uint32_t OUTPUT_INTERVAL_US = 8333;  // 120 Hz (matches visualizer DEVICE_HZ)
+  constexpr uint32_t OUTPUT_INTERVAL_US = 8333;  // 120 Hz
 
-  // Fixed-rate output (120 Hz) — phase-stable timing via micros(), not millis().
-  // Always send so the visualizer scrolls continuously like a right-aligned oscilloscope.
+  static float last_freq = 0.0f;
+  static float last_prob = 0.0f;
+  static float last_cents = 0.0f;
+  static char last_note[12] = {0};
+  static int last_midi = -1;
+  static uint32_t last_good_us = 0;
+
+  while (pitch1.process()) {
+  }
+
+  while (pitch1.available()) {
+    float f = pitch1.read();
+    float p = pitch1.probability();
+    if (!(f > FMIN_HZ * 0.95f && f < FMAX_HZ * 1.05f && p > 0.40f)) {
+      continue;
+    }
+
+    float midiFloat = 12.0f * log2f(f / 440.0f) + 69.0f;
+    int midiNote = (int)lroundf(midiFloat);
+    float cents = (midiFloat - (float)midiNote) * 100.0f;
+
+    // Snap exact ±1 octave jumps to previous stable MIDI
+    if (last_midi > 0) {
+      int d = midiNote - last_midi;
+      if (d == 12 || d == -12) {
+        midiNote = last_midi;
+        float target = 440.0f * powf(2.0f, ((float)last_midi - 69.0f) / 12.0f);
+        float f_adj = f;
+        while (f_adj > target * 1.5f) f_adj *= 0.5f;
+        while (f_adj < target * 0.67f) f_adj *= 2.0f;
+        float mf = 12.0f * log2f(f_adj / 440.0f) + 69.0f;
+        cents = (mf - (float)midiNote) * 100.0f;
+        f = f_adj;
+      }
+    }
+
+    last_freq = f;
+    last_prob = p;
+    last_cents = cents;
+    last_midi = midiNote;
+    const char* nm = noteToName(midiNote);
+    strncpy(last_note, nm, sizeof(last_note) - 1);
+    last_note[sizeof(last_note) - 1] = '\0';
+    last_good_us = micros();
+  }
+
   uint32_t nowUs = micros();
   if (nextOutputUs == 0) nextOutputUs = nowUs;
-  if ((int32_t)(nowUs - nextOutputUs) >= (int32_t)OUTPUT_INTERVAL_US) {
-    nextOutputUs += OUTPUT_INTERVAL_US;
-    if ((int32_t)(nowUs - nextOutputUs) > (int32_t)OUTPUT_INTERVAL_US) {
-      nextOutputUs = nowUs;  // recover after long stall
-    }
+  if ((int32_t)(nowUs - nextOutputUs) < (int32_t)OUTPUT_INTERVAL_US) {
+    return;
+  }
+  nextOutputUs += OUTPUT_INTERVAL_US;
+  if ((int32_t)(nowUs - nextOutputUs) > (int32_t)OUTPUT_INTERVAL_US) {
+    nextOutputUs = nowUs;
+  }
 
-    float level = peak1.read();
+  float level = peak1.read();
+  float yin_lvl = pitch1.level();
+  if (yin_lvl > level) level = yin_lvl;
 
-    bool haveYIN = false;
-    float yinFreq = 0.0f;
-    float yinProb = 0.0f;
+  const float REST_THRESHOLD = 0.0015f;
+  const float TRUST_FRESH_LOCK = 0.0040f;
+  const uint32_t HOLD_MAX_US = 180000;
 
-    if (notefreq1.available()) {
-      yinFreq = notefreq1.read();
-      yinProb = notefreq1.probability();
-      haveYIN = (yinFreq > 50.0f);  // accept as long as it gives a freq; we'll use its prob as-is
-    }
+  bool hold_ok = (last_note[0] != '\0') &&
+                 ((uint32_t)(nowUs - last_good_us) < HOLD_MAX_US);
 
-    // Gate *only* on volume (level), as requested.
-    // Below rest_threshold → send rest marker (for rhythm/rests).
-    // Above rest_threshold → send whatever the detector produces (even low confidence).
-    // To prevent garbage "random notes" at the very end of a decaying note (when YIN locks on noise/harmonics with low level),
-    // we only accept *fresh* locks if level is above a higher "trust" threshold.
-    // Below trust but above rest: hold the previous good note (using current level).
-    // This way the trace stays on the correct steady note until the volume has clearly dropped.
-    const float REST_THRESHOLD = 0.001;     // below this = rest
-    const float TRUST_FRESH_LOCK = 0.005;   // only trust a brand new YIN lock above this (prevents tail garbage)
-
-    // Last good state for holding during high-volume periods
-    static float last_freq = 0;
-    static float last_prob = 0;
-    static float last_cents = 0;
-    static char last_note[8] = {0};
-
-    if (level > REST_THRESHOLD) {
-      if (haveYIN && level > TRUST_FRESH_LOCK) {
-        // Fresh reading with sufficient volume for a trustworthy new lock: use it (even if its prob is somewhat low)
-        float midiFloat = 12.0f * log2(yinFreq / 440.0f) + 69.0f;
-        int midiNote = round(midiFloat);
-        float cents = (midiFloat - midiNote) * 100.0f;
-
-        // update last good
-        last_freq = yinFreq;
-        last_prob = yinProb;
-        last_cents = cents;
-        const char* nm = noteToName(midiNote);
-        strncpy(last_note, nm, sizeof(last_note)-1);
-        last_note[sizeof(last_note)-1] = '\0';
-
-        emitSampleLine(nextOutputUs / 1000, last_note, last_cents, last_prob, level);
-      } else if (last_freq > 0) {
-        // Volume is still high enough to be "sounding", but either no fresh YIN this tick or level too low for a new lock:
-        // hold the last good note so the trace stays steady on the correct pitch.
-        emitSampleLine(nextOutputUs / 1000, last_note, last_cents, last_prob, level);
-      } else {
-        // High volume but never locked yet
-        emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
-      }
+  if (level > REST_THRESHOLD) {
+    if (hold_ok) {
+      emitSampleLine(nextOutputUs / 1000, last_note, last_cents, last_prob, level);
     } else {
-      // Below rest threshold → explicit rest (and keep last_good so it can resume quickly if volume returns)
       emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
     }
+  } else {
+    last_freq = 0.0f;
+    last_prob = 0.0f;
+    last_cents = 0.0f;
+    last_midi = -1;
+    last_note[0] = '\0';
+    emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
   }
+
+  (void)TRUST_FRESH_LOCK;
 }
 
 const char* noteToName(int midi) {
-  static const char* names[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-  static char buf[8];
+  static const char* names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+  static char buf[12];
+  if (midi < 0) midi = 0;
+  if (midi > 127) midi = 127;
   int octave = (midi / 12) - 1;
   snprintf(buf, sizeof(buf), "%s%d", names[midi % 12], octave);
   return buf;

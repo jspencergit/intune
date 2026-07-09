@@ -61,3 +61,9 @@ ios/**/.swiftpm/
 # Cursor / agent tooling (local only — not project source)
 mcps/
 terminals/
+
+# Teensy pitch test harness — machine-local / generated outputs
+teensy/tools/audio_device.txt
+teensy/tools/*_results.json
+teensy/tools/*_summary.txt
+teensy/tools/last_suite_results.json
