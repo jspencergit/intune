@@ -20,13 +20,6 @@ object IntuneColors {
     /** Text/icons on solid Accent buttons */
     val OnAccent = Color(0xFFFFFFFF)
 
-    // Manuscript-style staff (warmer than UI chrome)
-    val StaffPaper = Color(0xFFF7F1E4)
-    val StaffPaperEdge = Color(0xFFD8CFC0)
-    val StaffLine = Color(0xFF2C3340)
-    val StaffLedger = Color(0xFF6A7380)
-    val StaffGutter = Color(0xFFEDE6D8)
-
     fun centsColor(cents: Float, inTuneThreshold: Float): Color {
         if (kotlin.math.abs(cents) < inTuneThreshold) return InTune
         return if (cents > 0f) Sharp else Flat

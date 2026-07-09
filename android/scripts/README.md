@@ -17,6 +17,7 @@ Self-contained helpers so Grok can **play a scale** (speaker → mic → Teensy 
 | `capture-ui.ps1 -Label name` | One screenshot → `android/screenshots/<timestamp>_<label>.png` |
 | `play-and-capture.ps1 -Label name` | Play scale/tones + auto screenshots mid-playback |
 | `run-ui-session.ps1` | Full guided tour: cents/staff × portrait/landscape |
+| `capture-staff-instruments.ps1` | Auto-tap **Instrument · …** and screenshot Viola/Cello/Violin |
 
 ## Typical agent workflow
 

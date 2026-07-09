@@ -294,15 +294,15 @@ private fun LandscapePracticeLayout(
     Row(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .padding(horizontal = 10.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Pin note card at top so it never clips when controls need a tiny scroll.
+        // Fixed rail: denser so Pause…Zone all fit above the home indicator (no scroll).
         Column(
             modifier = Modifier
                 .width(252.dp)
                 .fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             LiveNoteCard(
                 sample = focusSample,
@@ -326,7 +326,7 @@ private fun LandscapePracticeLayout(
                 compact = true,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 10.dp),
+                    .padding(bottom = 4.dp),
             )
         }
         Box(
@@ -472,7 +472,8 @@ private fun TopBar(
 private enum class NoteCardLayout { Portrait, Compact }
 
 private val CompactBtnPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-private val CompactBtnHeight = 34.dp
+private val CompactBtnHeight = 32.dp
+private val PrimaryBtnHeight = 42.dp
 
 @Composable
 private fun LiveNoteCard(
@@ -498,13 +499,11 @@ private fun LiveNoteCard(
 
     when (layout) {
         NoteCardLayout.Compact -> {
-            // Dense side-rail card: note + cents on one row, status on one line.
-            // Extra top pad so tall glyphs (e.g. REST) are not clipped by rounded clip.
             Column(
                 modifier = modifier
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .background(IntuneColors.Panel)
-                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Row(
@@ -513,26 +512,25 @@ private fun LiveNoteCard(
                 ) {
                     Text(
                         text = note,
-                        fontSize = 28.sp,
+                        fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
                         color = col,
                         maxLines = 1,
                     )
                     if (!isRest && sample != null) {
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "%+.1f¢".format(cents),
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Medium,
                             color = col.copy(alpha = 0.9f),
                             maxLines = 1,
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     "$qual · zone ±%.0f¢".format(inTuneThreshold),
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     color = IntuneColors.TextDim,
                     maxLines = 1,
                 )
@@ -594,12 +592,12 @@ private fun ControlPanel(
     compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val gap = if (compact) 4.dp else 6.dp
+    val gap = if (compact) 3.dp else 6.dp
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(gap),
     ) {
-        // Primary: large Pause. Secondary: Staff/Cents toggle.
+        // Primary: larger Pause. Secondary: Staff/Cents.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -608,14 +606,14 @@ private fun ControlPanel(
             Button(
                 onClick = onPauseToggle,
                 colors = ButtonDefaults.buttonColors(containerColor = IntuneColors.Accent),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                 modifier = Modifier
-                    .weight(1.35f)
-                    .height(48.dp),
+                    .weight(1.4f)
+                    .height(if (compact) PrimaryBtnHeight else 48.dp),
             ) {
                 Text(
                     if (paused) "Play" else "Pause",
-                    fontSize = 16.sp,
+                    fontSize = if (compact) 15.sp else 16.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                 )
@@ -625,7 +623,7 @@ private fun ControlPanel(
                 contentPadding = CompactBtnPadding,
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp),
+                    .height(if (compact) PrimaryBtnHeight else 48.dp),
             ) {
                 Text(
                     if (traceViewMode == TraceViewMode.Cents) "Staff" else "Cents",
@@ -635,17 +633,16 @@ private fun ControlPanel(
             }
         }
         if (traceViewMode == TraceViewMode.Staff) {
-            // Smaller “change instrument” control — label shows current + affordance
             FilledTonalButton(
                 onClick = onCycleInstrument,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(32.dp),
+                    .height(28.dp),
             ) {
                 Text(
                     text = "Instrument · ${staffInstrument.label}  ›",
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     softWrap = false,
@@ -693,9 +690,9 @@ private fun CompactStepperRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(IntuneColors.Panel)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -712,13 +709,13 @@ private fun CompactStepperRow(
             contentPadding = PaddingValues(0.dp),
             modifier = Modifier.size(CompactBtnHeight),
         ) {
-            Text(decreaseLabel, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(decreaseLabel, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
         Text(
             valueLabel,
             modifier = Modifier.weight(1f),
             textAlign = TextAlign.Center,
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             color = IntuneColors.TextPrimary,
         )
@@ -727,7 +724,7 @@ private fun CompactStepperRow(
             contentPadding = PaddingValues(0.dp),
             modifier = Modifier.size(CompactBtnHeight),
         ) {
-            Text(increaseLabel, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(increaseLabel, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

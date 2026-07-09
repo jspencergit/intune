@@ -4,17 +4,18 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.sp
 
 /**
- * Staff + pitch trace — “manuscript paper” look: warm paper field, even dark staff
- * lines, ledger marks, gutter for clef, soft inset edge.
+ * Staff + pitch trace.
+ *
+ * Fixed staff geometry: five lines always the same pixel spacing for every
+ * instrument; only clef and pitch→line mapping change. Short ledgers only
+ * where a note needs them (not full-width graph paper).
  */
 @Composable
 fun StaffTraceCanvas(
@@ -35,84 +36,41 @@ fun StaffTraceCanvas(
         val plotTop = StaffChartGeometry.PLOT_TOP
         val plotBottom = StaffChartGeometry.plotBottom(h)
         val windowMs = windowSec * 1000f
-        val gutterRight = plotLeft - 4f
 
-        fun pitchToY(pitchY: Float): Float =
-            StaffPitch.pitchToScreenY(pitchY, plotTop, plotBottom, instrument)
+        val staff = StaffPitch.fixedStaff(plotTop, plotBottom, instrument)
+
+        fun pitchToY(pitchY: Float): Float = staff.pitchToScreenY(pitchY)
 
         fun ageToX(ageMs: Float): Float {
             val t = (ageMs / windowMs).coerceIn(0f, 1f)
             return plotRight - t * (plotRight - plotLeft)
         }
 
-        // Outer panel chrome (matches app chrome)
-        drawRoundRect(
-            color = IntuneColors.Panel,
+        drawRect(IntuneColors.Panel, topLeft = Offset(0f, 0f), size = size)
+        drawRect(
+            IntuneColors.PanelBorder.copy(alpha = 0.35f),
             topLeft = Offset(0f, 0f),
             size = size,
-            cornerRadius = CornerRadius(12f, 12f),
+            style = Stroke(width = 1.5f),
         )
 
-        // Paper field for the staff + gutter (inset from chrome)
-        val paperPad = 3f
-        drawRoundRect(
-            color = IntuneColors.StaffPaper,
-            topLeft = Offset(paperPad, paperPad),
-            size = Size(w - paperPad * 2f, h - paperPad * 2f),
-            cornerRadius = CornerRadius(10f, 10f),
-        )
-        // Soft paper edge
-        drawRoundRect(
-            color = IntuneColors.StaffPaperEdge,
-            topLeft = Offset(paperPad, paperPad),
-            size = Size(w - paperPad * 2f, h - paperPad * 2f),
-            cornerRadius = CornerRadius(10f, 10f),
-            style = Stroke(width = 1.2f),
-        )
-
-        // Clef gutter (slightly warmer/darker strip — like a printed margin)
-        drawRect(
-            color = IntuneColors.StaffGutter,
-            topLeft = Offset(paperPad, paperPad),
-            size = Size(gutterRight - paperPad, h - paperPad * 2f),
-        )
-        // Gutter / system divider
-        drawLine(
-            color = IntuneColors.StaffPaperEdge,
-            start = Offset(gutterRight, plotTop - 4f),
-            end = Offset(gutterRight, plotBottom + 4f),
-            strokeWidth = 1.4f,
-        )
-
-        // In-tune bands on each staff line (very soft green wash on paper)
-        val bandHalf = (plotBottom - plotTop) / 40f
-        for (line in instrument.staffLines) {
-            val y = pitchToY(line)
+        // Soft in-tune wash on each staff line (same geometry for all instruments)
+        val bandHalf = staff.lineGapPx * 0.22f
+        for (linePitch in staff.linesLowToHigh) {
+            val y = pitchToY(linePitch)
             drawRect(
-                color = IntuneColors.InTune.copy(alpha = 0.06f),
+                color = IntuneColors.InTune.copy(alpha = 0.07f),
                 topLeft = Offset(plotLeft, y - bandHalf),
-                size = Size(plotRight - plotLeft, bandHalf * 2f),
+                size = androidx.compose.ui.geometry.Size(plotRight - plotLeft, bandHalf * 2f),
             )
         }
 
-        // Ledger lines — short traditional marks, only in the plot area
-        for (ledger in StaffPitch.ledgerLines(instrument)) {
-            val y = pitchToY(ledger)
+        // Five staff lines — constant pixel spacing
+        val staffStroke = 1.75f
+        for (linePitch in staff.linesLowToHigh) {
+            val y = pitchToY(linePitch)
             drawLine(
-                color = IntuneColors.StaffLedger.copy(alpha = 0.55f),
-                start = Offset(plotLeft + 6f, y),
-                end = Offset(plotRight - 6f, y),
-                strokeWidth = 1.15f,
-                cap = StrokeCap.Butt,
-            )
-        }
-
-        // Five staff lines — even weight, dark, full system width (trace region only)
-        val staffStroke = 1.85f
-        for (line in instrument.staffLines) {
-            val y = pitchToY(line)
-            drawLine(
-                color = IntuneColors.StaffLine.copy(alpha = 0.88f),
+                color = IntuneColors.TextPrimary.copy(alpha = 0.62f),
                 start = Offset(plotLeft, y),
                 end = Offset(plotRight, y),
                 strokeWidth = staffStroke,
@@ -120,33 +78,25 @@ fun StaffTraceCanvas(
             )
         }
 
-        // Subtle inner shadow under top staff line (depth)
-        val topStaffY = pitchToY(instrument.staffLines.first())
-        drawLine(
-            color = IntuneColors.StaffLine.copy(alpha = 0.06f),
-            start = Offset(plotLeft, topStaffY + 2.5f),
-            end = Offset(plotRight, topStaffY + 2.5f),
-            strokeWidth = 3f,
-        )
-
         val clefPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.argb(230, 44, 51, 64)
+            color = android.graphics.Color.argb(210, 58, 68, 80)
             isAntiAlias = true
         }
         val clefAnchorY = pitchToY(instrument.clefAnchor)
         val nativeCanvas = drawContext.canvas.nativeCanvas
         if (instrument.clefSymbol != null) {
-            clefPaint.textSize = 38.sp.toPx()
+            // Scale clef with line spacing so it still spans the staff
+            clefPaint.textSize = (staff.lineGapPx * 1.55f).coerceIn(40f, 72f)
             nativeCanvas.drawText(
                 instrument.clefSymbol,
-                8f,
+                6f,
                 clefAnchorY + clefPaint.textSize * 0.32f,
                 clefPaint,
             )
         } else {
-            clefPaint.textSize = 12.sp.toPx()
+            clefPaint.textSize = (staff.lineGapPx * 0.42f).coerceIn(12f, 18f)
             clefPaint.typeface = android.graphics.Typeface.create(
-                android.graphics.Typeface.SERIF,
+                android.graphics.Typeface.DEFAULT,
                 android.graphics.Typeface.BOLD,
             )
             drawVerticalClefLabel(
@@ -158,13 +108,12 @@ fun StaffTraceCanvas(
             )
         }
 
-        // Instrument name — top of paper, clear of clip
         val labelPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(200, 42, 112, 184)
             textSize = 12.sp.toPx()
             isAntiAlias = true
             typeface = android.graphics.Typeface.create(
-                android.graphics.Typeface.SANS_SERIF,
+                android.graphics.Typeface.DEFAULT,
                 android.graphics.Typeface.BOLD,
             )
         }
@@ -175,9 +124,10 @@ fun StaffTraceCanvas(
             labelPaint,
         )
 
-        // Pitch trace on top of staff
+        // Collect pitch samples + draw short ledgers only where notes need them
         var lastPitchY = StaffPitch.Y_REST
         val points = mutableListOf<Triple<Float, Float, androidx.compose.ui.graphics.Color>>()
+        val ledgerHalfW = 11f
 
         if (samples.isNotEmpty()) {
             for (sample in samples) {
@@ -197,24 +147,36 @@ fun StaffTraceCanvas(
                     IntuneColors.centsColor(sample.cents, inTuneThreshold).copy(alpha = alpha)
                 }
                 points.add(Triple(x, y, col))
+
+                if (!sample.isRest) {
+                    for (lp in staff.ledgerPitchesFor(pitchY)) {
+                        val ly = pitchToY(lp)
+                        drawLine(
+                            color = IntuneColors.TextPrimary.copy(alpha = 0.5f),
+                            start = Offset(x - ledgerHalfW, ly),
+                            end = Offset(x + ledgerHalfW, ly),
+                            strokeWidth = 1.5f,
+                            cap = StrokeCap.Butt,
+                        )
+                    }
+                }
             }
 
             for (i in 1 until points.size) {
                 val (x0, y0, _) = points[i - 1]
                 val (x1, y1, c1) = points[i]
-                // Soft under-glow so the line reads on paper
                 drawLine(
-                    color = c1.copy(alpha = c1.alpha * 0.22f),
+                    color = c1.copy(alpha = c1.alpha * 0.25f),
                     start = Offset(x0, y0),
                     end = Offset(x1, y1),
-                    strokeWidth = 8f,
+                    strokeWidth = 7f,
                     cap = StrokeCap.Round,
                 )
                 drawLine(
                     color = c1,
                     start = Offset(x0, y0),
                     end = Offset(x1, y1),
-                    strokeWidth = 3.2f,
+                    strokeWidth = 3f,
                     cap = StrokeCap.Round,
                 )
             }
@@ -228,17 +190,18 @@ fun StaffTraceCanvas(
             plotRight
         }
 
+        // Playhead spans the staff block (not full panel of empty ledger space)
         drawLine(
             IntuneColors.Playhead.copy(alpha = if (paused) 0.95f else 0.85f),
-            Offset(cursorX, plotTop),
-            Offset(cursorX, plotBottom),
+            Offset(cursorX, staff.staffTopY - staff.lineGapPx * 0.5f),
+            Offset(cursorX, staff.staffBottomY + staff.lineGapPx * 0.5f),
             strokeWidth = if (paused) 3f else 2.5f,
         )
         if (paused) {
             drawLine(
-                IntuneColors.Playhead.copy(alpha = 0.12f),
-                Offset(cursorX, plotTop),
-                Offset(cursorX, plotBottom),
+                IntuneColors.Playhead.copy(alpha = 0.15f),
+                Offset(cursorX, staff.staffTopY - staff.lineGapPx * 0.5f),
+                Offset(cursorX, staff.staffBottomY + staff.lineGapPx * 0.5f),
                 strokeWidth = 10f,
             )
         }
@@ -260,6 +223,17 @@ fun StaffTraceCanvas(
                     } else {
                         IntuneColors.centsColor(inspect.cents, inTuneThreshold)
                     }
+                    if (!inspect.isRest) {
+                        for (lp in staff.ledgerPitchesFor(pitchY)) {
+                            val ly = pitchToY(lp)
+                            drawLine(
+                                color = IntuneColors.TextPrimary.copy(alpha = 0.55f),
+                                start = Offset(cursorX - ledgerHalfW, ly),
+                                end = Offset(cursorX + ledgerHalfW, ly),
+                                strokeWidth = 1.6f,
+                            )
+                        }
+                    }
                     drawCircle(
                         color = dotCol.copy(alpha = 0.22f),
                         radius = 11f,
@@ -276,7 +250,6 @@ fun StaffTraceCanvas(
     }
 }
 
-/** Stacked letters in the gutter — readable alto clef substitute on Android. */
 private fun drawVerticalClefLabel(
     canvas: android.graphics.Canvas,
     text: String,

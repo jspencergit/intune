@@ -1,10 +1,15 @@
 package com.analogintuition.intune
 
 /**
- * Staff pitch mapping — aligned with visualizer_raylib (Y_STEP diatonic spaces).
+ * Staff pitch mapping — diatonic Y_STEP model shared with visualizer_raylib.
+ *
+ * Screen layout uses **fixed staff geometry**: five lines always the same pixel
+ * spacing; only clef / note→line mapping changes per instrument.
  */
 object StaffPitch {
     const val Y_STEP = 0.4f
+    /** Pitch span of one staff space (line to line) = two letter steps. */
+    const val STAFF_SPACE = 2f * Y_STEP // 0.8f
     const val Y_REST = 0.8f
     const val Y_C3 = 1.2f
 
@@ -12,10 +17,11 @@ object StaffPitch {
         val label: String,
         val pitchMin: Float,
         val pitchMax: Float,
+        /** Five staff lines, low→high pitch (even spacing of STAFF_SPACE). */
         val staffLines: FloatArray,
-        /** Pitch Y where the clef is anchored (middle line for alto, etc.). */
+        /** Pitch Y of the line the clef sits on. */
         val clefAnchor: Float,
-        /** SMuFL clef glyph — null for viola (use vertical "alto" label; Unicode alto misrenders). */
+        /** SMuFL clef glyph — null for viola (vertical "alto" label). */
         val clefSymbol: String? = null,
     ) {
         Viola(
@@ -30,7 +36,8 @@ object StaffPitch {
             label = "Cello",
             pitchMin = -1.6f,
             pitchMax = 4.0f,
-            staffLines = floatArrayOf(0.0f, 0.4f, 1.6f, 2.4f, 3.2f),
+            // Bass lines G2–A3 (was buggy 0.4 instead of 0.8)
+            staffLines = floatArrayOf(0.0f, 0.8f, 1.6f, 2.4f, 3.2f),
             clefAnchor = 2.4f,
             clefSymbol = "\uD834\uDD22", // 𝄢 bass
         ),
@@ -82,31 +89,83 @@ object StaffPitch {
         return y
     }
 
-    /** Note height plus cents offset (100¢ = half a diatonic step on the staff). */
     fun pitchYWithCents(note: String, cents: Float): Float {
         if (note == "---" || note == "REST" || note.isEmpty()) return Y_REST
         return pitchY(note) + (cents / 100f) * (Y_STEP * 0.5f)
     }
 
-    fun ledgerLines(instrument: Instrument): List<Float> {
-        val lines = mutableListOf<Float>()
-        var y = instrument.pitchMin
-        while (y <= instrument.pitchMax + 0.001f) {
-            val onStaff = instrument.staffLines.any { kotlin.math.abs(it - y) < 0.01f }
-            if (!onStaff) lines.add(y)
-            y += Y_STEP
+    /**
+     * Fixed five-line staff layout in plot coordinates.
+     * Line spacing is constant in pixels across instruments.
+     */
+    data class FixedStaff(
+        val linesLowToHigh: FloatArray,
+        val lineGapPx: Float,
+        /** Screen Y of the lowest staff line (highest Y value). */
+        val staffBottomY: Float,
+        /** Screen Y of the highest staff line. */
+        val staffTopY: Float,
+        val bottomPitch: Float,
+        val topPitch: Float,
+    ) {
+        fun pitchToScreenY(pitchY: Float): Float {
+            // Higher pitch → toward top of screen (smaller Y)
+            return staffBottomY - (pitchY - bottomPitch) / STAFF_SPACE * lineGapPx
         }
-        return lines
+
+        /** Ledger pitches (line positions only) needed to support [pitchY]. */
+        fun ledgerPitchesFor(pitchY: Float): List<Float> {
+            val out = mutableListOf<Float>()
+            if (pitchY > topPitch + 0.01f) {
+                var y = topPitch + STAFF_SPACE
+                while (y <= pitchY + 0.01f) {
+                    out.add(y)
+                    y += STAFF_SPACE
+                }
+            } else if (pitchY < bottomPitch - 0.01f) {
+                var y = bottomPitch - STAFF_SPACE
+                while (y >= pitchY - 0.01f) {
+                    out.add(y)
+                    y -= STAFF_SPACE
+                }
+            }
+            return out
+        }
     }
 
+    /**
+     * Build a staff with the same pixel line spacing for every instrument.
+     * Staff block is vertically centered in [plotTop, plotBottom] with margin for ledgers.
+     */
+    fun fixedStaff(
+        plotTop: Float,
+        plotBottom: Float,
+        instrument: Instrument,
+    ): FixedStaff {
+        val lines = instrument.staffLines.sortedArray()
+        val avail = (plotBottom - plotTop).coerceAtLeast(40f)
+        // Fill most of the chart: 4 line-gaps + ~0.4 space margin each side for ledgers.
+        // No tight max — landscape has plenty of height; let line spacing scale with the panel.
+        val lineGap = (avail / 4.8f).coerceIn(18f, 96f)
+        val staffBlockH = 4f * lineGap
+        val mid = (plotTop + plotBottom) * 0.5f
+        val staffBottomY = mid + staffBlockH * 0.5f
+        val staffTopY = mid - staffBlockH * 0.5f
+        return FixedStaff(
+            linesLowToHigh = lines,
+            lineGapPx = lineGap,
+            staffBottomY = staffBottomY,
+            staffTopY = staffTopY,
+            bottomPitch = lines.first(),
+            topPitch = lines.last(),
+        )
+    }
+
+    @Deprecated("Use fixedStaff().pitchToScreenY", ReplaceWith("fixedStaff(plotTop, plotBottom, instrument).pitchToScreenY(pitchY)"))
     fun pitchToScreenY(
         pitchY: Float,
         plotTop: Float,
         plotBottom: Float,
         instrument: Instrument,
-    ): Float {
-        val flipped = instrument.pitchMin + instrument.pitchMax - pitchY
-        val yScale = (plotBottom - plotTop) / (instrument.pitchMax - instrument.pitchMin)
-        return plotTop + (flipped - instrument.pitchMin) * yScale
-    }
+    ): Float = fixedStaff(plotTop, plotBottom, instrument).pitchToScreenY(pitchY)
 }

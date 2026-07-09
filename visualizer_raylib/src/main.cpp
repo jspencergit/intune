@@ -72,10 +72,11 @@ struct Config {
     bool debug = false;
 };
 
-// Musical staff Y mapping (identical semantics to the Python version for compatibility)
-constexpr float Y_REST     = 0.8f;
-constexpr float Y_C3       = 1.2f;
-constexpr float Y_STEP     = 0.4f;   // 0.4 per semitone step in our normalized space
+// Musical staff Y mapping (shared with Android StaffPitch.kt)
+constexpr float Y_REST      = 0.8f;
+constexpr float Y_C3        = 1.2f;
+constexpr float Y_STEP      = 0.4f;           // diatonic letter step
+constexpr float STAFF_SPACE = 2.0f * Y_STEP;  // 0.8 — line-to-line pitch span
 
 enum class ClefKind { Alto, Bass, Treble };
 
@@ -83,7 +84,7 @@ struct InstrumentProfile {
     const char* name;
     float pitch_min;   // lowest labeled note (C-major range start)
     float pitch_max;   // highest labeled note
-    std::vector<float> staff_main;
+    std::vector<float> staff_main;  // five lines, low→high, even STAFF_SPACE
     ClefKind clef;
     float clef_anchor;   // pitch_y where clef is centered
 };
@@ -91,7 +92,8 @@ struct InstrumentProfile {
 // C-major practice ranges: viola C3–E5, cello C2–C4, violin C4–C6
 static const InstrumentProfile INSTRUMENTS[] = {
     { "Viola", 1.2f, 7.6f, {2.4f, 3.2f, 4.0f, 4.8f, 5.6f}, ClefKind::Alto,   4.0f },
-    { "Cello", -1.6f, 4.0f, {0.0f, 0.4f, 1.6f, 2.4f, 3.2f}, ClefKind::Bass,   2.4f },
+    // Bass staff lines G2–A3 at 0.8 pitch-Y spacing (was buggy 0.4 between first two)
+    { "Cello", -1.6f, 4.0f, {0.0f, 0.8f, 1.6f, 2.4f, 3.2f}, ClefKind::Bass,   2.4f },
     { "Violin", 4.0f, 8.4f, {4.8f, 5.6f, 6.4f, 7.2f, 8.0f}, ClefKind::Treble, 5.6f },
 };
 
@@ -100,8 +102,49 @@ static float g_staff_pitch_min = 1.2f;
 static float g_staff_pitch_max = 7.6f;
 static std::vector<std::pair<std::string, float>> g_note_labels;
 static std::vector<float> g_staff_main;
-static std::vector<float> g_staff_ledger;
 static const InstrumentProfile* g_inst = &INSTRUMENTS[0];
+
+/** Fixed five-line staff: constant pixel line spacing for every instrument. */
+struct FixedStaff {
+    std::vector<float> lines;  // low→high pitch
+    float line_gap_px = 28.0f;
+    float staff_bottom_y = 0.0f;  // screen Y of lowest staff line
+    float staff_top_y = 0.0f;
+    float bottom_pitch = 0.0f;
+    float top_pitch = 0.0f;
+
+    float pitch_to_screen_y(float pitch_y) const {
+        return staff_bottom_y - (pitch_y - bottom_pitch) / STAFF_SPACE * line_gap_px;
+    }
+
+    /** Ledger line pitches needed to support a note at pitch_y (short ledgers only). */
+    std::vector<float> ledger_pitches_for(float pitch_y) const {
+        std::vector<float> out;
+        if (pitch_y > top_pitch + 0.01f) {
+            for (float y = top_pitch + STAFF_SPACE; y <= pitch_y + 0.01f; y += STAFF_SPACE)
+                out.push_back(y);
+        } else if (pitch_y < bottom_pitch - 0.01f) {
+            for (float y = bottom_pitch - STAFF_SPACE; y >= pitch_y - 0.01f; y -= STAFF_SPACE)
+                out.push_back(y);
+        }
+        return out;
+    }
+};
+
+static FixedStaff make_fixed_staff(float plot_top, float plot_bottom, const InstrumentProfile* inst) {
+    FixedStaff s;
+    s.lines = inst->staff_main;
+    float avail = std::max(40.0f, plot_bottom - plot_top);
+    // 4 gaps between 5 lines + ~0.5 space margin above & below for ledgers
+    s.line_gap_px = std::clamp(avail / 5.0f, 22.0f, 62.0f);
+    float staff_block_h = 4.0f * s.line_gap_px;
+    float mid = (plot_top + plot_bottom) * 0.5f;
+    s.staff_bottom_y = mid + staff_block_h * 0.5f;
+    s.staff_top_y = mid - staff_block_h * 0.5f;
+    s.bottom_pitch = s.lines.front();
+    s.top_pitch = s.lines.back();
+    return s;
+}
 
 static std::string pitch_y_to_note(float y) {
     int total = (int)std::lround((y - 1.2f) / Y_STEP);
@@ -112,28 +155,20 @@ static std::string pitch_y_to_note(float y) {
     return std::string(names[step]) + std::to_string(octave);
 }
 
-static std::vector<float> build_ledger_lines(float pmin, float pmax, const std::vector<float>& main) {
-    std::vector<float> ledgers;
-    for (float y = pmin; y <= pmax + 0.001f; y += Y_STEP) {
-        bool on_staff = false;
-        for (float m : main) {
-            if (std::fabs(y - m) < 0.01f) { on_staff = true; break; }
-        }
-        if (!on_staff) ledgers.push_back(y);
-    }
-    return ledgers;
-}
-
 static void apply_instrument(int idx) {
     g_instrument_idx = idx % (int)(sizeof(INSTRUMENTS) / sizeof(INSTRUMENTS[0]));
     g_inst = &INSTRUMENTS[g_instrument_idx];
     g_staff_pitch_min = g_inst->pitch_min;
     g_staff_pitch_max = g_inst->pitch_max;
     g_staff_main = g_inst->staff_main;
-    g_staff_ledger = build_ledger_lines(g_staff_pitch_min, g_staff_pitch_max, g_staff_main);
+    // Labels: staff lines + spaces between them only (fixed geometry; no range stretch)
     g_note_labels.clear();
-    for (float y = g_staff_pitch_min; y <= g_staff_pitch_max + 0.001f; y += Y_STEP) {
-        g_note_labels.push_back({pitch_y_to_note(y), y});
+    if (!g_staff_main.empty()) {
+        float lo = g_staff_main.front();
+        float hi = g_staff_main.back();
+        for (float y = lo; y <= hi + 0.001f; y += Y_STEP) {
+            g_note_labels.push_back({pitch_y_to_note(y), y});
+        }
     }
 }
 
@@ -289,11 +324,7 @@ static std::atomic<DWORD>    g_serial_last_error{0};
 // UTILITIES
 // =============================================================================
 
-// Screen Y grows downward; musical pitch grows upward — flip when drawing the staff.
-inline float staff_pitch_to_screen_y(float pitch_y, float staff_top, float y_scale) {
-    float flipped = g_staff_pitch_min + g_staff_pitch_max - pitch_y;
-    return staff_top + (flipped - g_staff_pitch_min) * y_scale;
-}
+// Legacy range-scale mapping removed — use FixedStaff::pitch_to_screen_y (constant line gap).
 
 float pitch_to_y(const std::string& note_str) {
     if (note_str.empty()) return 4.0f;
@@ -739,11 +770,9 @@ void draw_glowing_polyline(const std::vector<Vector2>& pts, Color base_col, floa
     }
 }
 
-// Draw a nice horizontal shaded "in tune zone" band around a staff line y
-void draw_intune_band(float staff_y, float x0, float x1, float staff_top, float y_scale, Color base) {
-    float half_h = 0.115f * y_scale;
-    float cy = staff_pitch_to_screen_y(staff_y, staff_top, y_scale);
-    Rectangle r = {x0, cy - half_h, x1 - x0, half_h * 2.0f};
+// Soft in-tune wash around a staff line (fixed geometry)
+void draw_intune_band(float screen_y, float x0, float x1, float half_h, Color base) {
+    Rectangle r = {x0, screen_y - half_h, x1 - x0, half_h * 2.0f};
     DrawRectangleRec(r, with_alpha(base, 0.04f));
 }
 
@@ -1031,7 +1060,7 @@ private:
     // View geometry (updated each frame)
     Rectangle staff_rect_{};
     Rectangle cents_rect_{};
-    float staff_y_scale_ = 82.0f; // pixels per staff unit
+    FixedStaff fixed_staff_{};  // constant pixel line spacing per instrument
     size_t last_trace_pts_ = 0;
     float frame_dt_ = 1.0f / 60.0f;
     float bpm_hold_timer_ = 0.0f;
@@ -1119,7 +1148,7 @@ private:
             break;
         }
         if (found) {
-            trace_screen_target_y_ = staff_pitch_to_screen_y(pitch_target, staff_rect_.y, staff_y_scale_);
+            trace_screen_target_y_ = fixed_staff_.pitch_to_screen_y(pitch_target);
             if (trace_screen_playhead_y_ < 1.0f) {
                 trace_screen_playhead_y_ = trace_screen_target_y_;
             }
@@ -1434,7 +1463,10 @@ private:
             cents_rect_ = {panel_x, content_top, panel_w, std::max(200.0f, cents_h)};
         } else {
             staff_rect_ = {panel_x, content_top, panel_w, 508.0f};
-            staff_y_scale_ = staff_rect_.height / (g_staff_pitch_max - g_staff_pitch_min + 0.6f);
+            // Plot band inside panel (leave room for header/labels)
+            const float plot_top = staff_rect_.y + 58.0f;
+            const float plot_bot = staff_rect_.y + staff_rect_.height - 16.0f;
+            fixed_staff_ = make_fixed_staff(plot_top, plot_bot, g_inst);
             cents_rect_ = {panel_x, staff_rect_.y + staff_rect_.height + 12.0f, panel_w, CENTS_RIBBON_H};
         }
         trace_x0_ = cents_rect_.x + STAFF_GUTTER_W + 10.0f;
@@ -1496,8 +1528,12 @@ private:
 
         if (!is_rest) {
             if (!cents_focus()) {
-                float pitch_y = staff_pitch_to_screen_y(inspect_sample_.y_pos, staff_rect_.y, staff_y_scale_);
-                DrawLineEx({trace_x0_, pitch_y}, {trace_x1_, pitch_y}, 1.2f, with_alpha(accent, 0.45f));
+                float pitch_y = fixed_staff_.pitch_to_screen_y(inspect_sample_.y_pos);
+                for (float lp : fixed_staff_.ledger_pitches_for(inspect_sample_.y_pos)) {
+                    float ly = fixed_staff_.pitch_to_screen_y(lp);
+                    DrawLineEx({inspect_x_ - 12.0f, ly}, {inspect_x_ + 12.0f, ly}, 1.5f,
+                               with_alpha(STAFF_LINE, 0.55f));
+                }
                 DrawCircleV({inspect_x_, pitch_y}, 9.0f, with_alpha(accent, 0.18f));
                 DrawCircleV({inspect_x_, pitch_y}, 5.0f, accent);
             }
@@ -1642,7 +1678,7 @@ private:
             return trace_x0 + (beat - left_beat) / (right_beat - left_beat) * usable_width;
         };
         auto y_to_screen = [&](float pitch_y) -> float {
-            return staff_pitch_to_screen_y(pitch_y, staff_rect_.y, staff_y_scale_);
+            return fixed_staff_.pitch_to_screen_y(pitch_y);
         };
 
         // Fixed left gutter background + divider
@@ -1652,27 +1688,25 @@ private:
         DrawLineEx({div_x, staff_rect_.y + 10}, {div_x, staff_rect_.y + staff_rect_.height - 10},
                    1.0f, with_alpha(PANEL_BORDER, 0.45f));
 
-        // In-tune shaded bands (trace area only)
-        for (float sy : g_staff_main) {
-            draw_intune_band(sy, trace_x0, trace_x1, staff_rect_.y, staff_y_scale_, COL_IN_TUNE);
+        // In-tune shaded bands on the five staff lines only
+        const float band_half = fixed_staff_.line_gap_px * 0.22f;
+        for (float sy : fixed_staff_.lines) {
+            draw_intune_band(y_to_screen(sy), trace_x0, trace_x1, band_half, COL_IN_TUNE);
         }
 
-        // Staff lines (trace area only — don't cross the gutter)
-        for (float sy : g_staff_main) {
+        // Five staff lines — constant pixel spacing for every instrument
+        for (float sy : fixed_staff_.lines) {
             float yy = y_to_screen(sy);
-            DrawLineEx({trace_x0, yy}, {trace_x1, yy}, 1.4f, STAFF_LINE);
+            DrawLineEx({trace_x0, yy}, {trace_x1, yy}, 1.6f, STAFF_LINE);
         }
-        for (float sy : g_staff_ledger) {
-            float yy = y_to_screen(sy);
-            DrawLineEx({trace_x0 + 4, yy}, {trace_x1 - 4, yy}, 0.8f, LEDGER_LINE);
-        }
+        // No full-width ledgers — short ledgers drawn per note below
 
         // Clef — centered on instrument anchor pitch
         float clef_x = staff_rect_.x + 24.0f;
         float clef_scale = (g_inst->clef == ClefKind::Bass) ? 0.82f : 0.88f;
         draw_active_clef({clef_x, y_to_screen(g_inst->clef_anchor)}, clef_scale, with_alpha(STAFF_LINE, 0.92f));
 
-        // Pitch labels — C-major range, every semitone
+        // Pitch labels — staff lines + spaces only (fixed geometry)
         float label_right = staff_rect_.x + STAFF_GUTTER_W - 8.0f;
         for (const auto& [nm, yy] : g_note_labels) {
             draw_pitch_label(nm.c_str(), label_right, y_to_screen(yy));
@@ -1691,18 +1725,20 @@ private:
                        14.0f, with_alpha(TEXT_DIM, 0.8f));
         draw_label_caps("PITCH TRACE", (int)trace_x0, (int)(staff_rect_.y + 52), 33, with_alpha(TEXT_DIM, 0.55f));
 
-        const float grid_top = staff_rect_.y + 54.0f;
-        const float grid_bot = staff_rect_.y + staff_rect_.height - 10.0f;
+        const float grid_top = fixed_staff_.staff_top_y - fixed_staff_.line_gap_px * 0.5f;
+        const float grid_bot = fixed_staff_.staff_bottom_y + fixed_staff_.line_gap_px * 0.5f;
         draw_measure_grid(trace_x0, trace_x1, grid_top, grid_bot, staff_rect_.y + 6.0f, true);
 
         const float sub_px = scroll_subpixel(usable_width);
+        constexpr float LEDGER_HALF_W = 12.0f;
 
         update_playhead_smooth(frame_dt_);
 
         const float now_screen_x = beat_to_screen(0.0f) - sub_px;
+        const float mid_staff_pitch = (fixed_staff_.bottom_pitch + fixed_staff_.top_pitch) * 0.5f;
         const float dot_y = (trace_screen_playhead_y_ > 1.0f)
             ? trace_screen_playhead_y_
-            : y_to_screen(4.0f);
+            : y_to_screen(mid_staff_pitch);
 
         // === THE TRACE (polyline from history — same path as cents ribbon) ===
         last_trace_pts_ = 0;
@@ -1712,7 +1748,7 @@ private:
             const float oldest_ts = now_ts - visible_sec * 1000.0f - 50.0f;
 
             std::vector<TraceVisPt> vis;
-            float last_y = 4.0f;
+            float last_y = mid_staff_pitch;
 
             for (const auto& sample : history_) {
                 if (sample.teensy_ts <= 0.0f || sample.teensy_ts < oldest_ts) continue;
@@ -1729,13 +1765,19 @@ private:
                 if (rest) {
                     col = COL_REST;
                     alpha = 0.55f;
-                    yy = (last_y > 0.1f) ? last_y : sample.y_pos;
+                    yy = (last_y > 0.1f || last_y < -0.1f) ? last_y : sample.y_pos;
                 } else {
                     col = get_color(sample.cents);
                     alpha = (sample.confidence > 0.01f)
                         ? std::clamp(0.35f + sample.confidence * 0.65f, 0.45f, 1.0f) : 0.88f;
                     yy = sample.y_pos;
                     last_y = yy;
+                    // Short ledger lines only where this note needs them
+                    for (float lp : fixed_staff_.ledger_pitches_for(yy)) {
+                        float ly = y_to_screen(lp);
+                        DrawLineEx({sx - LEDGER_HALF_W, ly}, {sx + LEDGER_HALF_W, ly}, 1.4f,
+                                   with_alpha(LEDGER_LINE, 0.75f));
+                    }
                 }
                 vis.push_back({sx, y_to_screen(yy), col, alpha});
             }
@@ -1760,7 +1802,7 @@ private:
             }
         }
 
-        // Playhead
+        // Playhead spans the staff block (+ half space for ledger margin)
         DrawLineEx({now_screen_x, grid_top}, {now_screen_x, grid_bot}, 2.0f, NOW_LINE);
 
         if (!history_.empty()) {
