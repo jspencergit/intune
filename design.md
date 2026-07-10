@@ -4,7 +4,7 @@
 
 **Status**: Working prototype (July 2026)  
 **Current focus**: **Real musical audio** for pitch validation (beyond synthetic scales); optional YIN+harmonic hybrid for low-string octaves; contact mic later.  
-**Last major activity**: Custom **overlapping-window YIN** on Teensy (v3); COM3 test harness + multi-volume suites; live chain Teensy → ESP32 → BLE → Android confirmed after INMP441 **SD (pin 8)** wire repair. Synthetic scales/detune mostly green; soft pure C3 cents still weak by SNR.
+**Last major activity (2026-07-10):** Android staff **fixed geometry** (constant line spacing, short ledgers, taller fill); **pause snapshot** so review trace stays; **mild cents bandwidth limit** (median + slew + light LPF) for detector edge spikes. Earlier: overlapping YIN v3, COM3 harness, live BLE path after INMP441 SD/pin 8 repair.
 
 ---
 
@@ -146,10 +146,35 @@ G3,8
 
 ### 2.6 Android App (android/)
 
-- Kotlin / Jetpack Compose **Intune Stream** app.
-- Connects to ESP32 Nordic UART Service; parses same CSV as PC visualizer.
-- `BleStreamClient.kt` — BLE scan/GATT/notify + line reassembly.
-- `PitchCsvParser` — flexible CSV parse; also accepts a complete line without trailing `\n` as fallback.
+Kotlin / Jetpack Compose **Intune Stream** — primary mobile practice UI over BLE.
+
+**Pipeline / sources**
+| File | Role |
+|------|------|
+| `BleStreamClient.kt` | BLE scan/GATT/notify, line reassembly, ring buffer (~4800 samples ≈ 40 s @ 120 Hz) |
+| `PitchCsvParser` | CSV parse; host timestamps; accepts line without trailing `\n` as fallback |
+| `PitchStreamFilter.kt` | Ingest: median + EMA on **MIDI** (spike reject for note/staff pitch); raw cents largely pass through |
+| `CentsDisplaySmoother.kt` | **Display-only** cents path: short median → slew limit → 1-pole LPF (τ ≈ 60 ms) to cut pitch-detector attack overshoots without muddying intentional plateaus |
+| `IntuneViewModel.kt` | Pause/scrub/window/zone; **frozen sample snapshot on Pause** so live BLE cannot age the review window off the chart |
+| `CentsTraceCanvas.kt` / `StaffTraceCanvas.kt` | Charts + scrub cursor |
+| `StaffPitch.kt` | Diatonic Y_STEP model shared with raylib; **fixed staff geometry** |
+
+**Staff display (parity with raylib)**
+- Five staff lines always **constant pixel spacing** across Viola / Cello / Violin; only clef + pitch→line mapping change.
+- Cello bass lines even 0.8 pitch-Y spacing (`0.0…3.2`); was a 0.4 bug.
+- **Short ledgers** only where a note needs them (not full-width graph paper).
+- Staff block fills most of the chart height (landscape).
+
+**Pause / review**
+- On Pause: freeze display clock + **copy** samples for chart/scrub/focus.
+- On Play: drop snapshot, jump clock to live.
+- Drag chart while paused to scrub; focus card follows inspect sample.
+
+**UX**
+- Dense control rail (Pause primary, Staff/Cents, instrument chip, scroll/zone steppers).
+- ADB capture scripts under `android/scripts/` (screenshots gitignored).
+
+**Known product gaps:** confidence/level UI, reconnect polish, Soft/Medium/Sharp filter UI (constants in `CentsDisplaySmoother` for now).
 
 ### 2.7 PC-First Analysis Tool (visualizer/analyze_viola.py)
 
@@ -249,7 +274,10 @@ Possible approaches for rhythm:
 - [ ] Soft low-string SNR: contact/piezo experiment vs air INMP441
 
 ### Product / platform (parallel, lower than real-sample pitch)
-- [ ] Android polish: staff view, confidence/level UI, reconnect robustness
+- [x] Android staff: fixed geometry, short ledgers, instrument cycle, denser controls
+- [x] Android pause: frozen sample snapshot (trace no longer vanishes while paused)
+- [x] Android cents display: mild bandwidth limit (tunable in `CentsDisplaySmoother`)
+- [ ] Android: confidence/level UI, reconnect robustness, optional Soft/Medium/Sharp filter control
 - [ ] iOS beyond BLE scaffold
 - [ ] Rhythm detection prototype (still aspirational)
 - [ ] Session logging (host-side first; SD card later)
@@ -277,7 +305,8 @@ intune/
 │   │   └── pitch_detector.h
 │   └── tools/                    (COM3 test harness; local results gitignored)
 ├── esp32/                        (UART → BLE bridge)
-├── android/                      (Intune Stream)
+├── android/                      (Intune Stream — staff/cents, pause snapshot, display LPF)
+│   └── scripts/                  (ADB capture + scale play for UI review)
 ├── ios/                          (BLE scaffold)
 ├── visualizer_raylib/            (primary PC visualizer)
 ├── visualizer/

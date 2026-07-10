@@ -2,7 +2,7 @@
 
 Living checklist. Context and architecture: **[design.md](design.md)**.
 
-**Updated:** 2026-07-09
+**Updated:** 2026-07-10
 
 ---
 
@@ -31,8 +31,9 @@ Living checklist. Context and architecture: **[design.md](design.md)**.
 
 ## Later / parallel
 
-- [ ] Android UI polish — use `android/scripts/` (ADB screenshots + scale play) for Grok review
-- [ ] Android: staff/cents UX, conf/level, reconnect
+- [ ] Android: confidence/level UI, reconnect polish
+- [ ] Android: optional Soft / Medium / Sharp control for cents display filter (`CentsDisplaySmoother`)
+- [ ] Android UI review loop — `android/scripts/` (ADB screenshots + scale play)
 - [ ] iOS beyond BLE scaffold
 - [ ] Rhythm prototype
 - [ ] Session logging
@@ -45,6 +46,11 @@ Living checklist. Context and architecture: **[design.md](design.md)**.
 - [x] COM3 test harness + synthetic multi-volume / scale suites
 - [x] Live Teensy → ESP32 → BLE → Android path
 - [x] INMP441 pinout validated (SD → pin 8; loose wire = digital silence)
+- [x] Android staff: fixed pixel line spacing (Viola/Cello/Violin), short ledgers, taller fill
+- [x] Android denser practice controls (landscape fit without scroll)
+- [x] Pause freezes sample snapshot so review trace stays on screen
+- [x] Cents display bandwidth limit (median + slew + light LPF; mild τ ≈ 60 ms)
+- [x] ADB scripts: capture UI / staff instruments / play-and-capture
 
 ---
 

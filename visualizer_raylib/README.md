@@ -15,7 +15,8 @@ The original Python (pyqtgraph) version is already pretty good and very practica
 
 ## Features (Raylib edition)
 
-- Elegant dark-themed alto-clef staff with warm staff lines, proper ledger support, and a vector-style alto clef
+- Fixed five-line staff geometry (constant pixel spacing for Viola/Cello/Violin; short ledgers only where notes need them)
+- Warm staff lines and vector-style clefs (alto label / bass / treble)
 - Thick glowing trace (multi-pass bloom) — the line feels alive and "sung"
 - Color: vivid mint-green (in tune), hot pink-red (sharp), electric cyan (flat)
 - BPM-synced smooth right-aligned scrolling ("newest on the right")

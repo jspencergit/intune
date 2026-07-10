@@ -6,9 +6,9 @@ Kotlin / Jetpack Compose app for **real-time cents-focused intonation practice**
 
 - Connects to ESP32 **Nordic UART** BLE peripheral (advertises as **Intune**)
 - **Cents Focus** card — note name, ±cents, sharp/flat/in-tune status
-- Scrolling **±25¢** trace chart (default; light grey theme, aligned with PC visualizer)
-- **Staff view** toggle — alternate trace on alto/bass/treble staff (viola/cello/violin)
-- **Pause / Play** — freeze the trace; **drag chart** to scrub a vertical review cursor
+- Scrolling **±25¢** trace chart (light grey theme; mild display bandwidth limit)
+- **Staff view** — fixed five-line geometry (same pixel spacing for Viola / Cello / Violin); short ledgers only when needed
+- **Pause / Play** — freezes a sample snapshot so the trace stays while you scrub (live BLE cannot age it away)
 - **Scroll speed** — Slower / Faster (2–24 s visible window)
 - **In-tune zone** — Narrow / Widen (±2–25¢ threshold)
 - **Portrait** and **landscape** layouts; BLE stays connected on rotation
@@ -54,24 +54,31 @@ Key sources:
 
 | File | Role |
 |------|------|
-| `BleStreamClient.kt` | BLE scan, GATT, notify, CSV parse |
-| `IntuneViewModel.kt` | Pause, scrub, scroll window, in-tune zone; survives rotation |
+| `BleStreamClient.kt` | BLE scan, GATT, notify, CSV parse, sample ring buffer |
+| `PitchStreamFilter.kt` | Ingest MIDI median/EMA (note stability) |
+| `CentsDisplaySmoother.kt` | Display-only cents: median + slew + light LPF |
+| `IntuneViewModel.kt` | Pause snapshot, scrub, window, zone, instrument; survives rotation |
 | `IntuneApplication.kt` | Application-scoped BLE client |
-| `MainActivity.kt` | Compose UI (portrait / landscape) |
-| `CentsTraceCanvas.kt` | Chart drawing, scrub cursor |
-| `CentsChartGeometry.kt` | Plot layout, touch ↔ time mapping |
+| `MainActivity.kt` | Compose UI (portrait / landscape, dense controls) |
+| `CentsTraceCanvas.kt` | Cents chart + scrub cursor |
+| `StaffTraceCanvas.kt` / `StaffPitch.kt` | Fixed staff geometry + short ledgers |
+| `CentsChartGeometry.kt` / `StaffChartGeometry.kt` | Plot layout, touch ↔ time mapping |
 
 ## Controls (in app)
 
 | Control | Action |
 |---------|--------|
 | **Connect** / **Disconnect** | BLE session |
-| **Pause** / **Play** | Freeze / resume live scroll |
+| **Pause** / **Play** | Freeze snapshot / resume live scroll |
 | **Drag chart** (paused) | Move review cursor; updates Cents Focus card |
-| **Slower** / **Faster** | Wider / narrower time window |
-| **Narrow** / **Widen** | Tighter / looser in-tune band |
-| **Staff view** / **Cents view** | Toggle chart between staff and cents trace |
-| **Viola** / **Cello** / **Violin** (staff mode) | Cycle clef and practice range |
+| **Scroll − / +** | Wider / narrower time window |
+| **Zone − / +** | Tighter / looser in-tune band |
+| **Staff** / **Cents** | Toggle chart between staff and cents trace |
+| **Instrument · …** (staff mode) | Cycle Viola / Cello / Violin (clef + range) |
+
+## Display filtering (cents chart)
+
+Raw detector cents can spike on note attacks. The scroll trace runs a **display-only** pipeline (`CentsDisplaySmoother`): short median → per-sample slew cap → 1-pole low-pass (τ ≈ 60 ms). Header note/cents still follow the latest sample; staff pitch uses ingest MIDI smoothing. Tune constants in `CentsDisplaySmoother.kt` if edges feel too soft or too spiky.
 
 ## Build from command line
 

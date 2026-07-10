@@ -36,7 +36,7 @@ Teensy 4.1 + I²S mic  ──Serial4 @ 115200──►  ESP32  ──BLE Nordic 
         └── USB @ 230400 ──► PC visualizer         └── forwards live mic CSV
 ```
 
-Android app: **Cents Focus** trace, pause + finger scrub, scroll speed, adjustable in-tune zone. See [`android/README.md`](android/README.md).
+Android app: **Cents Focus** + staff views (fixed geometry), pause snapshot + finger scrub, mild cents display filter, scroll speed, adjustable in-tune zone. See [`android/README.md`](android/README.md).
 
 ### Teensy ↔ ESP32 wiring
 
