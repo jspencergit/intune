@@ -28,8 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -157,6 +159,7 @@ private fun IntuneScreen(
                 displayNowMs = displayNow,
                 windowSec = viewModel.windowSec,
                 inTuneThreshold = viewModel.inTuneThreshold,
+                centsScaleMax = viewModel.centsScaleMax,
                 traceViewMode = viewModel.traceViewMode,
                 staffInstrument = viewModel.staffInstrument,
                 paused = viewModel.paused,
@@ -167,6 +170,8 @@ private fun IntuneScreen(
                 onScrollFaster = viewModel::scrollFaster,
                 onTuneWider = viewModel::widenTuneZone,
                 onTuneNarrower = viewModel::narrowTuneZone,
+                onCentsRangeWider = viewModel::centsRangeWider,
+                onCentsRangeTighter = viewModel::centsRangeTighter,
                 onToggleTraceView = viewModel::toggleTraceView,
                 onCycleInstrument = viewModel::cycleStaffInstrument,
                 modifier = Modifier
@@ -180,6 +185,7 @@ private fun IntuneScreen(
                 displayNowMs = displayNow,
                 windowSec = viewModel.windowSec,
                 inTuneThreshold = viewModel.inTuneThreshold,
+                centsScaleMax = viewModel.centsScaleMax,
                 traceViewMode = viewModel.traceViewMode,
                 staffInstrument = viewModel.staffInstrument,
                 paused = viewModel.paused,
@@ -190,6 +196,8 @@ private fun IntuneScreen(
                 onScrollFaster = viewModel::scrollFaster,
                 onTuneWider = viewModel::widenTuneZone,
                 onTuneNarrower = viewModel::narrowTuneZone,
+                onCentsRangeWider = viewModel::centsRangeWider,
+                onCentsRangeTighter = viewModel::centsRangeTighter,
                 onToggleTraceView = viewModel::toggleTraceView,
                 onCycleInstrument = viewModel::cycleStaffInstrument,
                 modifier = Modifier
@@ -207,6 +215,7 @@ private fun PortraitPracticeLayout(
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    centsScaleMax: Float,
     traceViewMode: TraceViewMode,
     staffInstrument: StaffPitch.Instrument,
     paused: Boolean,
@@ -217,6 +226,8 @@ private fun PortraitPracticeLayout(
     onScrollFaster: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
+    onCentsRangeWider: () -> Unit,
+    onCentsRangeTighter: () -> Unit,
     onToggleTraceView: () -> Unit,
     onCycleInstrument: () -> Unit,
     modifier: Modifier = Modifier,
@@ -245,6 +256,7 @@ private fun PortraitPracticeLayout(
                 displayNowMs = displayNowMs,
                 windowSec = windowSec,
                 inTuneThreshold = inTuneThreshold,
+                centsScaleMax = centsScaleMax,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
                 onScrub = onScrub,
@@ -255,6 +267,7 @@ private fun PortraitPracticeLayout(
             paused = paused,
             windowSec = windowSec,
             inTuneThreshold = inTuneThreshold,
+            centsScaleMax = centsScaleMax,
             traceViewMode = traceViewMode,
             staffInstrument = staffInstrument,
             onPauseToggle = onPauseToggle,
@@ -262,6 +275,8 @@ private fun PortraitPracticeLayout(
             onScrollFaster = onScrollFaster,
             onTuneWider = onTuneWider,
             onTuneNarrower = onTuneNarrower,
+            onCentsRangeWider = onCentsRangeWider,
+            onCentsRangeTighter = onCentsRangeTighter,
             onToggleTraceView = onToggleTraceView,
             onCycleInstrument = onCycleInstrument,
             compact = true,
@@ -279,6 +294,7 @@ private fun LandscapePracticeLayout(
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    centsScaleMax: Float,
     traceViewMode: TraceViewMode,
     staffInstrument: StaffPitch.Instrument,
     paused: Boolean,
@@ -289,6 +305,8 @@ private fun LandscapePracticeLayout(
     onScrollFaster: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
+    onCentsRangeWider: () -> Unit,
+    onCentsRangeTighter: () -> Unit,
     onToggleTraceView: () -> Unit,
     onCycleInstrument: () -> Unit,
     modifier: Modifier = Modifier,
@@ -299,12 +317,13 @@ private fun LandscapePracticeLayout(
             .padding(horizontal = 10.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Fixed rail: denser so Pause…Zone all fit above the home indicator (no scroll).
+        // Scrollable rail: note card + controls (Range must not be clipped off-screen).
         Column(
             modifier = Modifier
                 .width(252.dp)
-                .fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             LiveNoteCard(
                 sample = focusSample,
@@ -316,6 +335,7 @@ private fun LandscapePracticeLayout(
                 paused = paused,
                 windowSec = windowSec,
                 inTuneThreshold = inTuneThreshold,
+                centsScaleMax = centsScaleMax,
                 traceViewMode = traceViewMode,
                 staffInstrument = staffInstrument,
                 onPauseToggle = onPauseToggle,
@@ -323,12 +343,14 @@ private fun LandscapePracticeLayout(
                 onScrollFaster = onScrollFaster,
                 onTuneWider = onTuneWider,
                 onTuneNarrower = onTuneNarrower,
+                onCentsRangeWider = onCentsRangeWider,
+                onCentsRangeTighter = onCentsRangeTighter,
                 onToggleTraceView = onToggleTraceView,
                 onCycleInstrument = onCycleInstrument,
                 compact = true,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 4.dp),
+                    .padding(bottom = 8.dp),
             )
         }
         Box(
@@ -343,6 +365,7 @@ private fun LandscapePracticeLayout(
                 displayNowMs = displayNowMs,
                 windowSec = windowSec,
                 inTuneThreshold = inTuneThreshold,
+                centsScaleMax = centsScaleMax,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
                 onScrub = onScrub,
@@ -360,6 +383,7 @@ private fun TraceChartPanel(
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    centsScaleMax: Float,
     paused: Boolean,
     scrubOffsetMs: Float,
     onScrub: (Float) -> Unit,
@@ -414,6 +438,7 @@ private fun TraceChartPanel(
                 displayNowMs = displayNowMs,
                 windowSec = windowSec,
                 inTuneThreshold = inTuneThreshold,
+                centsScaleMax = centsScaleMax,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
                 modifier = Modifier.fillMaxSize(),
@@ -582,6 +607,7 @@ private fun ControlPanel(
     paused: Boolean,
     windowSec: Float,
     inTuneThreshold: Float,
+    centsScaleMax: Float,
     traceViewMode: TraceViewMode,
     staffInstrument: StaffPitch.Instrument,
     onPauseToggle: () -> Unit,
@@ -589,12 +615,15 @@ private fun ControlPanel(
     onScrollFaster: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
+    onCentsRangeWider: () -> Unit,
+    onCentsRangeTighter: () -> Unit,
     onToggleTraceView: () -> Unit,
     onCycleInstrument: () -> Unit,
     compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val gap = if (compact) 3.dp else 6.dp
+    val gap = if (compact) 2.dp else 6.dp
+    val primaryH = if (compact) 38.dp else 48.dp
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(gap),
@@ -608,14 +637,14 @@ private fun ControlPanel(
             Button(
                 onClick = onPauseToggle,
                 colors = ButtonDefaults.buttonColors(containerColor = IntuneColors.Accent),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 modifier = Modifier
                     .weight(1.4f)
-                    .height(if (compact) PrimaryBtnHeight else 48.dp),
+                    .height(primaryH),
             ) {
                 Text(
                     if (paused) "Play" else "Pause",
-                    fontSize = if (compact) 15.sp else 16.sp,
+                    fontSize = if (compact) 14.sp else 16.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                 )
@@ -625,7 +654,7 @@ private fun ControlPanel(
                 contentPadding = CompactBtnPadding,
                 modifier = Modifier
                     .weight(1f)
-                    .height(if (compact) PrimaryBtnHeight else 48.dp),
+                    .height(primaryH),
             ) {
                 Text(
                     if (traceViewMode == TraceViewMode.Cents) "Staff" else "Cents",
@@ -667,6 +696,7 @@ private fun ControlPanel(
             increaseLabel = "+",
             onDecrease = onScrollSlower,
             onIncrease = onScrollFaster,
+            dense = compact,
         )
         CompactStepperRow(
             label = "Zone",
@@ -675,7 +705,19 @@ private fun ControlPanel(
             increaseLabel = "+",
             onDecrease = onTuneNarrower,
             onIncrease = onTuneWider,
+            dense = compact,
         )
+        if (traceViewMode == TraceViewMode.Cents) {
+            CompactStepperRow(
+                label = "Range",
+                valueLabel = "±%.0f¢".format(centsScaleMax),
+                decreaseLabel = "−",
+                increaseLabel = "+",
+                onDecrease = onCentsRangeTighter,
+                onIncrease = onCentsRangeWider,
+                dense = compact,
+            )
+        }
     }
 }
 
@@ -688,13 +730,15 @@ private fun CompactStepperRow(
     increaseLabel: String,
     onDecrease: () -> Unit,
     onIncrease: () -> Unit,
+    dense: Boolean = false,
 ) {
+    val btn = if (dense) 30.dp else CompactBtnHeight
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(IntuneColors.Panel)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .padding(horizontal = 6.dp, vertical = if (dense) 1.dp else 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -703,13 +747,15 @@ private fun CompactStepperRow(
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
             color = IntuneColors.TextPrimary,
-            modifier = Modifier.width(52.dp),
+            // Wide enough for "Scroll" / "Range" without clipping the last letter.
+            modifier = Modifier.width(60.dp),
             maxLines = 1,
+            softWrap = false,
         )
         FilledTonalButton(
             onClick = onDecrease,
             contentPadding = PaddingValues(0.dp),
-            modifier = Modifier.size(CompactBtnHeight),
+            modifier = Modifier.size(btn),
         ) {
             Text(decreaseLabel, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
@@ -724,7 +770,7 @@ private fun CompactStepperRow(
         FilledTonalButton(
             onClick = onIncrease,
             contentPadding = PaddingValues(0.dp),
-            modifier = Modifier.size(CompactBtnHeight),
+            modifier = Modifier.size(btn),
         ) {
             Text(increaseLabel, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }

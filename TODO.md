@@ -37,7 +37,34 @@ Living checklist. Context and architecture: **[design.md](design.md)**.
 
 ## Later / parallel
 
-### Android display fallbacks (do not block detector work)
+### Tuning reference A (teacher request)
+Today everything assumes **A4 = 440 Hz** (Teensy maps Hz → note/cents with 440; app displays that).
+
+**Architecture (preferred):** app can handle this **alone** — no Teensy command channel required for v1.
+- Pitch *detection* is frequency in Hz (YIN does not care about concert A).
+- Only the *labeling* of note + cents depends on reference A.
+- **Option A (simplest UI-only):** Teensy keeps streaming note/cents @ 440; app converts back to Hz and re-labels with user A (e.g. 441, 442). Works if protocol is consistent.
+- **Option B (cleaner long-term):** Teensy streams **Hz** (or Hz + optional 440-cents); app owns all mapping. Best if we touch the CSV protocol.
+- **Option C (optional later):** BLE/UART config to Teensy so firmware also labels with the same A — only needed if PC visualizer / other clients must match without the app.
+
+- [ ] App setting: **concert A** (default 440; allow ~415–445 or presets 440 / 441 / 442)
+- [ ] Recompute displayed note + cents from stream using selected A
+- [ ] Persist preference; show current A in UI (e.g. “A=441”)
+- [ ] Decide protocol: keep 440-based labels + app remap **or** add explicit Hz field
+- [ ] (Optional) Sync A to raylib/PC visualizer so all clients agree
+
+### Temperament: equal (piano) vs “absolute” / just-style (teacher request)
+Teacher: **tempered** ≈ piano **equal temperament** (what we do now — 12 equal semitones).  
+**Absolute** (his term) likely means feedback against **pure/just intervals** relative to a reference (often open string or key tonic), not piano equal steps — common in string teaching (e.g. pure fifths, expressive thirds). Exact teacher wording should be confirmed before locking UX copy.
+
+- [ ] Confirm with teacher: “absolute” = just intonation vs drone/key, pure open-string fifths, or something else?
+- [ ] App mode switch: **Equal temperament** (piano) | **Just / absolute** (name TBD)
+- [ ] Equal: current behavior (2^(1/12) grid from concert A)
+- [ ] Just/absolute v1: cents vs **pure intervals from a reference pitch** (selectable: open C/G/D/A, or detected tonic)
+- [ ] Staff/trace still usable in both modes (document what “in tune” means in each)
+- [ ] Prefer **app-side only** for temperament tables (same reason as concert A — pure display math)
+
+### Android display / UX
 If the detector is briefly confused, the app should still **show something useful**:
 - [x] `PitchStreamFilter`: was **3.5 st** freeze (open-string fifths = 7 st). Now **8.5 st** instant + **6-frame jump confirm**. Installed on device.
 - [ ] Confidence/level UI, reconnect polish

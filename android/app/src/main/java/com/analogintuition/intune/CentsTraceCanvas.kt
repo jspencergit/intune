@@ -10,18 +10,19 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.sp
 
-private const val CENTS_SCALE_MAX = 25f
-
 @Composable
 fun CentsTraceCanvas(
     samples: List<PitchSample>,
     displayNowMs: Float,
     windowSec: Float,
     inTuneThreshold: Float,
+    /** Vertical half-range in cents (e.g. 50 → ±50). */
+    centsScaleMax: Float = 50f,
     paused: Boolean = false,
     scrubOffsetMs: Float = 0f,
     modifier: Modifier = Modifier,
 ) {
+    val scaleMax = centsScaleMax.coerceIn(25f, 50f)
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
@@ -30,7 +31,7 @@ fun CentsTraceCanvas(
         val plotTop = CentsChartGeometry.PLOT_TOP
         val plotBottom = CentsChartGeometry.plotBottom(h)
         val midY = (plotTop + plotBottom) * 0.5f
-        val scaleY = (plotBottom - plotTop) * 0.5f / CENTS_SCALE_MAX
+        val scaleY = (plotBottom - plotTop) * 0.5f / scaleMax
         val windowMs = windowSec * 1000f
 
         fun centsToY(cents: Float) = midY - cents * scaleY
@@ -47,7 +48,8 @@ fun CentsTraceCanvas(
             style = Stroke(width = 1.5f),
         )
 
-        val tuneOff = inTuneThreshold * scaleY
+        // Clip in-tune band drawing to plot so a wide zone still looks OK.
+        val tuneOff = (inTuneThreshold * scaleY).coerceAtMost((plotBottom - plotTop) * 0.5f)
         drawRect(
             color = IntuneColors.TuneMarker.copy(alpha = 0.16f),
             topLeft = Offset(plotLeft, midY - tuneOff),
@@ -73,8 +75,17 @@ fun CentsTraceCanvas(
             strokeWidth = 1.4f,
         )
 
-        val labels = listOf("+25", "+10", "0", "-10", "-25")
-        val values = listOf(25f, 10f, 0f, -10f, -25f)
+        val values = when {
+            scaleMax >= 45f -> listOf(50f, 25f, 0f, -25f, -50f)
+            else -> listOf(25f, 10f, 0f, -10f, -25f)
+        }
+        val labels = values.map { c ->
+            when {
+                c > 0f -> "+${c.toInt()}"
+                c < 0f -> "${c.toInt()}"
+                else -> "0"
+            }
+        }
         val paint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(160, 90, 100, 112)
             textSize = 11.sp.toPx()
@@ -104,7 +115,7 @@ fun CentsTraceCanvas(
                 if (age > windowMs + 400f || smoothCents == null) continue
 
                 val x = ageToX(age)
-                val cents = smoothCents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX)
+                val cents = smoothCents.coerceIn(-scaleMax, scaleMax)
                 val y = centsToY(cents)
                 val col = IntuneColors.centsColor(cents, inTuneThreshold)
                 points.add(Triple(x, y, col))
@@ -165,7 +176,7 @@ fun CentsTraceCanvas(
                         if (sample.hostTsMs > inspect.hostTsMs) break
                         replay.next(sample)?.let { inspectCents = it }
                     }
-                    val dotY = centsToY(inspectCents.coerceIn(-CENTS_SCALE_MAX, CENTS_SCALE_MAX))
+                    val dotY = centsToY(inspectCents.coerceIn(-scaleMax, scaleMax))
                     val dotCol = if (inspect.isRest) {
                         IntuneColors.Rest
                     } else {
