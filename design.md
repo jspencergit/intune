@@ -3,8 +3,8 @@
 **Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello**
 
 **Status**: Working prototype (July 2026)  
-**Current focus**: **Real musical audio** for pitch validation (beyond synthetic scales); optional YIN+harmonic hybrid for low-string octaves; contact mic later.  
-**Last major activity (2026-07-10):** Android staff **fixed geometry** (constant line spacing, short ledgers, taller fill); **pause snapshot** so review trace stays; **mild cents bandwidth limit** (median + slew + light LPF) for detector edge spikes. Earlier: overlapping YIN v3, COM3 harness, live BLE path after INMP441 SD/pin 8 repair.
+**Current focus**: Real-instrument A/B; acoustic cents stability.  
+**Last major activity (2026-07-12):** Pitch **v6**: Goertzel referee with 2τ/3τ + CMND-weighted score (G3 partial / C3 3rd-harmonic); 5-hop freq median; Android **PitchStreamFilter** jump confirm (no stuck-on-last-note). Installed app on Pixel. CGDA live: C/G/D/A section notes solid; G3 flicker ~0.5% (was ~15%).
 
 ---
 

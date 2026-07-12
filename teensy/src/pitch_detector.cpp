@@ -27,6 +27,12 @@ void AudioAnalyzePitchYin::threshold(float t) {
   __enable_irq();
 }
 
+void AudioAnalyzePitchYin::clearContinuity() {
+  __disable_irq();
+  last_freq_ = 0.0f;
+  __enable_irq();
+}
+
 void AudioAnalyzePitchYin::setRange(float fmin_hz, float fmax_hz) {
   __disable_irq();
   if (fmin_hz < 40.0f) fmin_hz = 40.0f;
@@ -124,6 +130,44 @@ float AudioAnalyzePitchYin::refinePeriod(const float* d, int tau, int tau_max) c
   if (delta < -0.5f) delta = -0.5f;
   if (delta > 0.5f) delta = 0.5f;
   return (float)tau + delta;
+}
+
+float AudioAnalyzePitchYin::goertzelPower(const float* x, int n, float freq_hz) const {
+  // Hann-windowed Goertzel power at freq_hz (Teensy-cheap single-bin DFT).
+  const float sr = AUDIO_SAMPLE_RATE_EXACT;
+  if (freq_hz < 1.0f || freq_hz > sr * 0.45f || n < 8) return 0.0f;
+  const float w = 2.0f * 3.14159265f * freq_hz / sr;
+  const float coeff = 2.0f * cosf(w);
+  float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f;
+  const float inv_n1 = 1.0f / (float)(n - 1);
+  for (int i = 0; i < n; i++) {
+    const float hann = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * (float)i * inv_n1);
+    s0 = x[i] * hann + coeff * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  float p = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+  if (p < 0.0f) p = 0.0f;
+  return p;
+}
+
+float AudioAnalyzePitchYin::harmonicScore(const float* x, int n, float f0_hz) const {
+  // Pure-tone safe harmonic score:
+  //   g(f0) * (eps + g(2f0)) * (eps + g(3f0))
+  // True f0 keeps energy at f0; a pure tone at f wrongly scored as f/2 has ~0 at f/2.
+  // Bowed partials still reward candidates whose integer harmonics are present.
+  const float sr = AUDIO_SAMPLE_RATE_EXACT;
+  if (f0_hz < fmin_hz_ * 0.9f || f0_hz > fmax_hz_ * 1.1f) return 0.0f;
+  const float g1 = goertzelPower(x, n, f0_hz);
+  const float g2 = (2.0f * f0_hz < sr * 0.45f) ? goertzelPower(x, n, 2.0f * f0_hz) : 0.0f;
+  const float g3 = (3.0f * f0_hz < sr * 0.45f) ? goertzelPower(x, n, 3.0f * f0_hz) : 0.0f;
+  const float eps = 1e-6f;
+  return g1 * (eps + g2) * (eps + g3);
+}
+
+bool AudioAnalyzePitchYin::isLocalMin(const float* d, int tau, int tau_max) const {
+  if (tau <= 0 || tau >= tau_max) return false;
+  return d[tau] <= d[tau - 1] && d[tau] <= d[tau + 1];
 }
 
 void AudioAnalyzePitchYin::analyzeFromSnapshot() {
@@ -225,9 +269,11 @@ void AudioAnalyzePitchYin::analyzeFromSnapshot() {
     }
   }
 
-  // Continuity: only suppress sudden *octave* flips, not stepwise pitch changes.
-  // If the new estimate is ~2× or ~½× the previous stable pitch, and a strong
-  // trough still exists near the previous period, keep the previous octave.
+  // Remember first-min (pre-continuity) so the referee can still recover.
+  const int first_tau = chosen_tau;
+
+  // Soft continuity: only prefer previous octave if it still has *better*
+  // harmonic support. Blind continuity freezes a wrong D3 after one glitch.
   if (last_freq_ > 50.0f) {
     float f_new = sr / (float)chosen_tau;
     float ratio = f_new / last_freq_;
@@ -248,33 +294,106 @@ void AudioAnalyzePitchYin::analyzeFromSnapshot() {
           }
         }
         if (cont_tau > 0 && cont_v < 0.20f) {
-          chosen_tau = cont_tau;
-          best_cmnd = cont_v;
+          float s_new = harmonicScore(x, kWindow, f_new);
+          float s_old = harmonicScore(x, kWindow, last_freq_);
+          if (s_old > s_new * 1.15f) {
+            chosen_tau = cont_tau;
+            best_cmnd = cont_v;
+          }
         }
       }
     }
   }
 
-  // Octave-down correction only: if first min is likely 2f0 (strong partial),
-  // and 2*tau is also a clean min with similar/better CMND, take the lower pitch.
-  // Do NOT walk to 3τ/4τ (subharmonics).
+  // Octave / harmonic referee (v6): score {first-min, current, k·τ for k=½,2,3}
+  // with Goertzel harmonic energy.
+  //   2τ  — partial lock (G3→G4)
+  //   τ/2 — subharmonic lock (D4→D3)
+  //   3τ  — low-string 3rd-harmonic lock (C3→G4: 3·τ_G4 ≈ τ_C3)
   {
-    int t2 = chosen_tau * 2;
-    if (t2 + 1 < tau_max && t2 - 1 > tau_min) {
-      bool t2_min = (d[t2] <= d[t2 - 1] && d[t2] <= d[t2 + 1]);
-      if (t2_min && d[t2] < yin_threshold_ * 1.05f && d[t2] <= best_cmnd + 0.04f) {
-        // Only if half-period trough is not *much* deeper than 2τ (partial case)
-        // When true f0 is chosen_tau, d[t2] is usually higher; when chosen is T/2, d[t2]≈d[T].
-        if (d[t2] < best_cmnd + 0.02f || best_cmnd > 0.08f) {
-          // Require last_freq agreement OR first min relatively weak
-          float f2 = sr / (float)t2;
-          bool cont = (last_freq_ > 50.0f && fabsf(f2 - last_freq_) / last_freq_ < 0.06f);
-          bool weak_first = best_cmnd > 0.06f && d[t2] < 0.10f;
-          if (cont || weak_first) {
-            chosen_tau = t2;
-            best_cmnd = d[t2];
-          }
+    int cands[10];
+    int nc = 0;
+    auto add_cand = [&](int t) {
+      if (t <= tau_min || t >= tau_max) return;
+      for (int i = 0; i < nc; i++) if (cands[i] == t) return;
+      cands[nc++] = t;
+    };
+    add_cand(chosen_tau);
+    add_cand(first_tau);
+
+    // Half / double / triple of both current and first-min
+    add_cand(chosen_tau / 2);
+    add_cand(chosen_tau * 2);
+    add_cand(chosen_tau * 3);
+    add_cand(first_tau / 2);
+    add_cand(first_tau * 2);
+    add_cand(first_tau * 3);
+
+    // Keep only trough-like candidates (local min or near-min)
+    int viable[10];
+    int nv = 0;
+    float best_c = 1.0f;
+    for (int i = 0; i < nc; i++) {
+      int t = cands[i];
+      float dv = d[t];
+      // allow ±1 neighborhood min for shallow acoustic troughs
+      if (t - 1 > tau_min && d[t - 1] < dv) dv = d[t - 1];
+      if (t + 1 < tau_max && d[t + 1] < dv) dv = d[t + 1];
+      bool trough = isLocalMin(d, t, tau_max) || dv < 0.16f;
+      if (!trough || dv > 0.22f) continue;
+      viable[nv++] = t;
+      if (dv < best_c) best_c = dv;
+    }
+
+    if (nv >= 1) {
+      int best_tau = chosen_tau;
+      float best_score = -1.0f;
+      for (int i = 0; i < nv; i++) {
+        int t = viable[i];
+        if (d[t] > best_c + 0.08f) continue;
+        float f_c = sr / (float)t;
+        if (f_c < fmin_hz_ * 0.95f || f_c > fmax_hz_ * 1.05f) continue;
+        // Weight by inverse CMND so a deep 2τ trough (true G3) beats a shallow
+        // first-min at the 2nd partial (G4), even when g(G4) energy is large.
+        float harm = harmonicScore(x, kWindow, f_c);
+        float sc = harm / (d[t] + 0.025f);
+        bool better = (best_score < 0.0f) ||
+                      (sc > best_score * 1.08f) ||
+                      (sc > best_score * 0.92f && d[t] < d[best_tau] - 0.02f);
+        // Prefer longer period (lower pitch) when its trough is clearly deeper:
+        // classic bowed partial lock (first-min = 2f0).
+        if (!better && best_score > 0.0f && t > best_tau &&
+            d[t] + 0.04f < d[best_tau] && d[t] < 0.10f) {
+          better = true;
         }
+        // Octave-up only when longer candidate is a weak/double-period trough.
+        if (!better && best_score > 0.0f && t < best_tau &&
+            sc > best_score * 0.90f && d[t] < 0.08f && d[best_tau] > 0.06f) {
+          better = true;
+        }
+        if (better) {
+          best_score = sc;
+          best_tau = t;
+        }
+      }
+      chosen_tau = best_tau;
+      best_cmnd = d[chosen_tau];
+    }
+  }
+
+  // Final octave-up rescue (subharmonic lock only): half-period must have
+  // clearly better harmonic *product* score, not merely a strong 2nd partial.
+  // (A strong 2nd partial alone would wrongly flip true G3 → G4.)
+  {
+    int th = chosen_tau / 2;
+    if (th > tau_min + 1 && d[th] < 0.12f && d[chosen_tau] > 0.03f) {
+      float f_lo = sr / (float)chosen_tau;
+      float f_hi = sr / (float)th;
+      float s_lo = harmonicScore(x, kWindow, f_lo);
+      float s_hi = harmonicScore(x, kWindow, f_hi);
+      if (s_hi > s_lo * 1.35f && d[th] <= d[chosen_tau] + 0.02f) {
+        chosen_tau = th;
+        best_cmnd = d[th];
       }
     }
   }

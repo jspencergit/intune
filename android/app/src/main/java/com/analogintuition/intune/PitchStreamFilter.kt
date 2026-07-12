@@ -5,12 +5,19 @@ import kotlin.math.roundToInt
 
 /**
  * Ingest filter: median + EMA on MIDI for spike rejection and staff/header pitch.
- * Cents and note pass through from the detector — the cents trace does its own moving average.
+ * Cents and note pass through from the detector once accepted.
+ *
+ * Large legitimate jumps (open-string fifths ≈ 7 st, octaves ≈ 12 st) must not
+ * freeze the previous note forever — that caused "stuck on last note" when
+ * changing strings without a rest.
  */
 class PitchStreamFilter(
     private val windowSize: Int = 7,
-    private val outlierSemitones: Float = 3.5f,
+    /** Instant-accept radius; open-string fifth is 7 st. */
+    private val outlierSemitones: Float = 8.5f,
     private val emaAlpha: Float = 0.28f,
+    /** Accept a larger jump after this many consecutive agreeing samples (~50 ms @ 120 Hz). */
+    private val jumpConfirmFrames: Int = 6,
 ) {
     private val ring = FloatArray(windowSize) { Float.NaN }
     private var ringCount = 0
@@ -18,12 +25,26 @@ class PitchStreamFilter(
     private var lastNote = ""
     private var lastCents = 0f
 
+    // Pending jump: consecutive samples far from EMA but consistent with each other.
+    private var pendingCount = 0
+    private var pendingMidi = Float.NaN
+    private var pendingNote = ""
+    private var pendingCents = 0f
+
     fun reset() {
         ring.fill(Float.NaN)
         ringCount = 0
         emaMidi = null
         lastNote = ""
         lastCents = 0f
+        clearPending()
+    }
+
+    private fun clearPending() {
+        pendingCount = 0
+        pendingMidi = Float.NaN
+        pendingNote = ""
+        pendingCents = 0f
     }
 
     fun filter(samples: List<PitchSample>): List<PitchSample> =
@@ -37,14 +58,49 @@ class PitchStreamFilter(
 
         val rawMidi = noteCentsToMidiFloat(sample.note, sample.cents) ?: return sample
 
-        if (emaMidi != null && abs(rawMidi - emaMidi!!) > outlierSemitones) {
+        val ema = emaMidi
+        if (ema != null && abs(rawMidi - ema) > outlierSemitones) {
+            // Far from current track — do not rewrite forever to old note.
+            val agreesWithPending =
+                !pendingMidi.isNaN() && abs(rawMidi - pendingMidi) <= 1.5f
+            if (agreesWithPending) {
+                pendingCount++
+                // Keep freshest label within the pending cluster
+                pendingMidi = pendingMidi * 0.6f + rawMidi * 0.4f
+                pendingNote = sample.note
+                pendingCents = sample.cents
+            } else {
+                pendingCount = 1
+                pendingMidi = rawMidi
+                pendingNote = sample.note
+                pendingCents = sample.cents
+            }
+
+            if (pendingCount >= jumpConfirmFrames) {
+                // Commit to the new pitch region
+                ring.fill(Float.NaN)
+                ringCount = 0
+                pushRing(pendingMidi)
+                emaMidi = pendingMidi
+                lastNote = pendingNote
+                lastCents = pendingCents
+                clearPending()
+                return sample.copy(
+                    note = lastNote,
+                    cents = lastCents,
+                    pitchMidi = emaMidi!!,
+                )
+            }
+
+            // Brief hold of previous while confirming the jump
             return sample.copy(
                 note = lastNote.ifEmpty { sample.note },
-                cents = lastCents,
-                pitchMidi = emaMidi!!,
+                cents = if (lastNote.isEmpty()) sample.cents else lastCents,
+                pitchMidi = ema,
             )
         }
 
+        clearPending()
         pushRing(rawMidi)
         val median = ringMedian() ?: rawMidi
         emaMidi = if (emaMidi == null) {

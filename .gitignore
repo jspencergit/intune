@@ -67,6 +67,7 @@ teensy/tools/audio_device.txt
 teensy/tools/*_results.json
 teensy/tools/*_summary.txt
 teensy/tools/last_suite_results.json
+teensy/tools/_live_capture/
 
 # Android UI capture (ADB screenshots for agent review)
 android/screenshots/**

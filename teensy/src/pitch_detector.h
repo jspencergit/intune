@@ -36,6 +36,8 @@ public:
   void begin(float threshold = 0.12f);
   void threshold(float t);
   void setRange(float fmin_hz, float fmax_hz);
+  /** Clear continuity state only (e.g. after a rest) without wiping the audio ring. */
+  void clearContinuity();
 
   // Run from loop(): processes at most one pending hop. Returns true if a new
   // pitch estimate was produced (also sets available()).
@@ -51,6 +53,10 @@ public:
 private:
   void analyzeFromSnapshot();
   float refinePeriod(const float* d, int tau, int tau_max) const;
+  // Light harmonic referee (Goertzel at f,2f,3f) for octave disambiguation.
+  float goertzelPower(const float* x, int n, float freq_hz) const;
+  float harmonicScore(const float* x, int n, float f0_hz) const;
+  bool isLocalMin(const float* d, int tau, int tau_max) const;
 
   audio_block_t* inputQueueArray[1];
 

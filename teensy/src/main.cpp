@@ -6,9 +6,10 @@
 #include "pitch_detector.h"
 
 /*
- * Intune Teensy Pitch Detection v3
+ * Intune Teensy Pitch Detection v6
  *
- * Custom overlapping-window YIN (pitch_detector.*) for viola/violin.
+ * Custom overlapping-window YIN + Goertzel harmonic referee (k=1/2,2,3)
+ * for viola/violin open-string octave / partial locks.
  * Constant 120 Hz CSV on USB Serial + Serial4 (ESP32 BLE bridge).
  *
  * Format: timestamp_ms,Note,Cents,probability,level
@@ -56,7 +57,7 @@ void setup() {
   pitch1.setRange(FMIN_HZ, FMAX_HZ);
   pitch1.begin(0.12f);
 
-  Serial.println("=== Intune pitch v3: overlapping YIN (viola/violin) ===");
+  Serial.println("=== Intune pitch v6: YIN + harmonic referee (x2/x3) ===");
   Serial.println("=== USB 230400 + Serial4 115200 pin17 | 120 Hz CSV ===");
 }
 
@@ -64,15 +65,19 @@ void loop() {
   static uint32_t nextOutputUs = 0;
   constexpr uint32_t OUTPUT_INTERVAL_US = 8333;  // 120 Hz
 
-  static float last_freq = 0.0f;
   static float last_prob = 0.0f;
   static float last_cents = 0.0f;
   static char last_note[12] = {0};
-  static int last_midi = -1;
   static uint32_t last_good_us = 0;
 
   while (pitch1.process()) {
   }
+
+  // Short median on frequency suppresses 1–2 frame freckles (C3→G4 partial spikes)
+  // without freezing real string changes (new note fills the ring in ~5 hops).
+  static float freq_ring[5] = {0};
+  static int freq_ring_n = 0;
+  static int freq_ring_i = 0;
 
   while (pitch1.available()) {
     float f = pitch1.read();
@@ -81,29 +86,31 @@ void loop() {
       continue;
     }
 
-    float midiFloat = 12.0f * log2f(f / 440.0f) + 69.0f;
+    freq_ring[freq_ring_i] = f;
+    freq_ring_i = (freq_ring_i + 1) % 5;
+    if (freq_ring_n < 5) freq_ring_n++;
+
+    float fs[5];
+    int n = freq_ring_n;
+    for (int i = 0; i < n; i++) fs[i] = freq_ring[i];
+    // insertion sort
+    for (int i = 1; i < n; i++) {
+      float key = fs[i];
+      int j = i - 1;
+      while (j >= 0 && fs[j] > key) {
+        fs[j + 1] = fs[j];
+        j--;
+      }
+      fs[j + 1] = key;
+    }
+    float f_med = fs[n / 2];
+    // Use median freq; keep latest probability for display.
+    float midiFloat = 12.0f * log2f(f_med / 440.0f) + 69.0f;
     int midiNote = (int)lroundf(midiFloat);
     float cents = (midiFloat - (float)midiNote) * 100.0f;
 
-    // Snap exact ±1 octave jumps to previous stable MIDI
-    if (last_midi > 0) {
-      int d = midiNote - last_midi;
-      if (d == 12 || d == -12) {
-        midiNote = last_midi;
-        float target = 440.0f * powf(2.0f, ((float)last_midi - 69.0f) / 12.0f);
-        float f_adj = f;
-        while (f_adj > target * 1.5f) f_adj *= 0.5f;
-        while (f_adj < target * 0.67f) f_adj *= 2.0f;
-        float mf = 12.0f * log2f(f_adj / 440.0f) + 69.0f;
-        cents = (mf - (float)midiNote) * 100.0f;
-        f = f_adj;
-      }
-    }
-
-    last_freq = f;
     last_prob = p;
     last_cents = cents;
-    last_midi = midiNote;
     const char* nm = noteToName(midiNote);
     strncpy(last_note, nm, sizeof(last_note) - 1);
     last_note[sizeof(last_note) - 1] = '\0';
@@ -124,9 +131,10 @@ void loop() {
   float yin_lvl = pitch1.level();
   if (yin_lvl > level) level = yin_lvl;
 
+  // Hold last good pitch only briefly when YIN misses a hop (attack/noise).
+  // Keep this short so a failed lock cannot "stick" on the previous string.
   const float REST_THRESHOLD = 0.0015f;
-  const float TRUST_FRESH_LOCK = 0.0040f;
-  const uint32_t HOLD_MAX_US = 180000;
+  const uint32_t HOLD_MAX_US = 80000;  // ~80 ms (was 180 ms)
 
   bool hold_ok = (last_note[0] != '\0') &&
                  ((uint32_t)(nowUs - last_good_us) < HOLD_MAX_US);
@@ -135,18 +143,24 @@ void loop() {
     if (hold_ok) {
       emitSampleLine(nextOutputUs / 1000, last_note, last_cents, last_prob, level);
     } else {
+      // Stale lock: clear so UI cannot keep showing the previous note.
+      last_prob = 0.0f;
+      last_cents = 0.0f;
+      last_note[0] = '\0';
+      freq_ring_n = 0;
+      freq_ring_i = 0;
       emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
     }
   } else {
-    last_freq = 0.0f;
     last_prob = 0.0f;
     last_cents = 0.0f;
-    last_midi = -1;
     last_note[0] = '\0';
+    freq_ring_n = 0;
+    freq_ring_i = 0;
+    // Drop octave continuity so the next string is not biased by the previous one.
+    pitch1.clearContinuity();
     emitSampleLine(nextOutputUs / 1000, "---", 0.0f, 0.0f, level);
   }
-
-  (void)TRUST_FRESH_LOCK;
 }
 
 const char* noteToName(int midi) {
