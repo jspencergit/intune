@@ -1,6 +1,7 @@
 package com.analogintuition.intune
 
 import android.app.Application
+import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -15,6 +16,9 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
 
     val bleClient = (application as IntuneApplication).bleClient
 
+    private val prefs =
+        application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
     var paused by mutableStateOf(false)
     var pausedAtMs by mutableFloatStateOf(0f)
     var scrubOffsetMs by mutableFloatStateOf(0f)
@@ -25,6 +29,15 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
      * Default ±50 for beginners who can be far off pitch; ±25 for a tighter view.
      */
     var centsScaleMax by mutableFloatStateOf(50f)
+    /**
+     * Concert A in Hz for note/cents display. Stream is labeled at 440 Hz;
+     * the app remaps for the selected reference (default 441).
+     */
+    var concertAHz by mutableFloatStateOf(
+        prefs.getFloat(KEY_CONCERT_A, ConcertPitch.DEFAULT_A_HZ)
+            .coerceIn(ConcertPitch.MIN_A_HZ, ConcertPitch.MAX_A_HZ),
+    )
+        private set
     var displayNowMs by mutableFloatStateOf(0f)
     var traceViewMode by mutableStateOf(TraceViewMode.Cents)
     var staffInstrument by mutableStateOf(StaffPitch.Instrument.Viola)
@@ -64,7 +77,7 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
         if (!paused) {
             pausedAtMs = currentDisplayMs
             scrubOffsetMs = 0f
-            // Snapshot so live stream cannot age the review window off the chart.
+            // Snapshot raw stream samples; display remaps with current concert A.
             frozenSamples = bleClient.state.value.samples.toList()
             paused = true
         } else {
@@ -77,9 +90,24 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** Samples for chart + inspect: frozen snapshot while paused, else live BLE. */
-    fun displaySamples(live: List<PitchSample>): List<PitchSample> =
-        if (paused) frozenSamples ?: live else live
+    /**
+     * Samples for chart + inspect: frozen snapshot while paused, else live BLE.
+     * Always remapped to [concertAHz] for note/cents display.
+     */
+    fun displaySamples(live: List<PitchSample>): List<PitchSample> {
+        val base = if (paused) frozenSamples ?: live else live
+        return ConcertPitch.remapSamples(base, concertAHz)
+    }
+
+    fun updateConcertAHz(hz: Float) {
+        val v = hz.coerceIn(ConcertPitch.MIN_A_HZ, ConcertPitch.MAX_A_HZ)
+        concertAHz = v
+        prefs.edit().putFloat(KEY_CONCERT_A, v).apply()
+    }
+
+    fun nudgeConcertA(delta: Float) {
+        updateConcertAHz(concertAHz + delta)
+    }
 
     fun setScrubOffset(offsetMs: Float) {
         if (!paused) return
@@ -118,4 +146,8 @@ class IntuneViewModel(application: Application) : AndroidViewModel(application) 
         centsScaleMax = 25f
     }
 
+    companion object {
+        private const val PREFS_NAME = "intune_prefs"
+        private const val KEY_CONCERT_A = "concert_a_hz"
+    }
 }

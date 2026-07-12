@@ -32,12 +32,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -48,6 +50,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontWeight
@@ -137,6 +140,7 @@ private fun IntuneScreen(
     } else {
         latest
     }
+    var showSettings by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -147,8 +151,19 @@ private fun IntuneScreen(
         TopBar(
             status = bleState.status,
             connected = bleState.connected,
+            concertAHz = viewModel.concertAHz,
             onConnectClick = onConnectClick,
+            onSettingsClick = { showSettings = true },
         )
+
+        if (showSettings) {
+            SettingsDialog(
+                concertAHz = viewModel.concertAHz,
+                onConcertAChange = viewModel::updateConcertAHz,
+                onNudgeConcertA = viewModel::nudgeConcertA,
+                onDismiss = { showSettings = false },
+            )
+        }
 
         if (!bleState.connected) {
             ConnectHelpCard(modifier = Modifier.padding(16.dp))
@@ -461,7 +476,9 @@ private fun TraceChartPanel(
 private fun TopBar(
     status: String,
     connected: Boolean,
+    concertAHz: Float,
     onConnectClick: () -> Unit,
+    onSettingsClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -484,8 +501,21 @@ private fun TopBar(
         Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text("Intune", fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = IntuneColors.TextPrimary)
-            Text(status, fontSize = 12.sp, color = IntuneColors.TextDim)
+            Text(
+                "$status · A=${"%.0f".format(concertAHz)}",
+                fontSize = 12.sp,
+                color = IntuneColors.TextDim,
+                maxLines = 1,
+            )
         }
+        FilledTonalButton(
+            onClick = onSettingsClick,
+            contentPadding = PaddingValues(0.dp),
+            modifier = Modifier.size(36.dp),
+        ) {
+            Text("⚙", fontSize = 16.sp)
+        }
+        Spacer(modifier = Modifier.width(6.dp))
         FilledTonalButton(
             onClick = onConnectClick,
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -494,6 +524,78 @@ private fun TopBar(
             Text(if (connected) "Disconnect" else "Connect", fontSize = 13.sp)
         }
     }
+}
+
+@Composable
+private fun SettingsDialog(
+    concertAHz: Float,
+    onConcertAChange: (Float) -> Unit,
+    onNudgeConcertA: (Float) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Concert A",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = IntuneColors.TextPrimary,
+                )
+                Text(
+                    "Reference pitch for note names and cents. " +
+                        "Detector still measures absolute frequency; only the labels change.",
+                    fontSize = 12.sp,
+                    color = IntuneColors.TextDim,
+                    lineHeight = 16.sp,
+                )
+                CompactStepperRow(
+                    label = "A4",
+                    valueLabel = "%.0f Hz".format(concertAHz),
+                    decreaseLabel = "−",
+                    increaseLabel = "+",
+                    onDecrease = { onNudgeConcertA(-1f) },
+                    onIncrease = { onNudgeConcertA(1f) },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf(440f, 441f, 442f).forEach { preset ->
+                        val selected = kotlin.math.abs(concertAHz - preset) < 0.5f
+                        if (selected) {
+                            Button(
+                                onClick = { onConcertAChange(preset) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(36.dp),
+                            ) {
+                                Text("%.0f".format(preset), fontSize = 13.sp, maxLines = 1)
+                            }
+                        } else {
+                            FilledTonalButton(
+                                onClick = { onConcertAChange(preset) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(36.dp),
+                            ) {
+                                Text("%.0f".format(preset), fontSize = 13.sp, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        },
+    )
 }
 
 private enum class NoteCardLayout { Portrait, Compact }

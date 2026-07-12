@@ -47,10 +47,10 @@ Today everything assumes **A4 = 440 Hz** (Teensy maps Hz → note/cents with 440
 - **Option B (cleaner long-term):** Teensy streams **Hz** (or Hz + optional 440-cents); app owns all mapping. Best if we touch the CSV protocol.
 - **Option C (optional later):** BLE/UART config to Teensy so firmware also labels with the same A — only needed if PC visualizer / other clients must match without the app.
 
-- [ ] App setting: **concert A** (default 440; allow ~415–445 or presets 440 / 441 / 442)
-- [ ] Recompute displayed note + cents from stream using selected A
-- [ ] Persist preference; show current A in UI (e.g. “A=441”)
-- [ ] Decide protocol: keep 440-based labels + app remap **or** add explicit Hz field
+- [x] App setting: **concert A** (default **441**; presets 440 / 441 / 442, ±1 Hz)
+- [x] Recompute displayed note + cents from stream (440) using selected A
+- [x] Persist preference; show current A in top bar (`A=441`)
+- [x] Protocol choice v1: keep 440-based Teensy labels + **app remap**
 - [ ] (Optional) Sync A to raylib/PC visualizer so all clients agree
 
 ### Temperament: equal (piano) vs “absolute” / just-style (teacher request)
