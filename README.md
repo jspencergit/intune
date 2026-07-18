@@ -112,7 +112,7 @@ cd visualizer_raylib\build\Release
 | `android/` | **Intune Stream** — Kotlin / Compose cents visualizer over BLE |
 | `ios/` | iOS BLE scaffold (requires Mac / Xcode to build) |
 | `visualizer/` | Legacy Python visualizer (PyQt5 + pyqtgraph) |
-| `test_audio/` | Synthetic test scales (gitignored) — see `visualizer/generate_test_scale.py` |
+| `test_audio/` | Synthetic scales + real continuous takes (gitignored). Slice: `teensy/tools/slice_note_takes.py` |
 | `design.md` | Architecture and algorithm notes |
 
 ## Instruments & scales

@@ -3,8 +3,8 @@
 **Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello**
 
 **Status**: Working prototype (July 2026)  
-**Current focus**: Real-instrument A/B; acoustic cents stability.  
-**Last major activity (2026-07-12):** Pitch **v6**: Goertzel referee with 2τ/3τ + CMND-weighted score (G3 partial / C3 3rd-harmonic); 5-hop freq median; Android **PitchStreamFilter** jump confirm (no stuck-on-last-note). Installed app on Pixel. CGDA live: C/G/D/A section notes solid; G3 flicker ~0.5% (was ~15%).
+**Current focus**: Pro violin first-position half-step suite (same continuous-take → slice → COM3 flow as Noah); only then revisit residual G3↔G4 freckle.  
+**Last major activity (2026-07-18):** Noah viola half steps (`test_audio/Noah_Viola_HalfSteps.mp3`) sliced to 32 clips; live Teensy **32/32 note names**. Tools: `slice_note_takes.py`, `test_noah_halfsteps_live.py`. Earlier: pitch v6 harmonic referee, Android jump filter, concert A default 441, cents Range ±50/±25.
 
 ---
 
@@ -259,33 +259,29 @@ Possible approaches for rhythm:
 - [x] Synthetic scale / detune / multi-volume COM3 validation (after SD wire fix)
 
 ### Now — pitch quality on **real music** (next gate)
-- [ ] **Build a real-sample corpus** (highest priority for pitch work)
-  - Sources: own viola/violin recordings; existing `C:\Code\reference_audio\viola\…`; short clips of open strings, first-position scales, slow etudes, vibrato on/off, soft/loud dynamics
-  - Prefer **wav/flac** (gitignored media lives outside repo or under ignored paths)
-  - Label metadata: instrument, note range, vibrato y/n, mic type (air vs contact), file list in a small manifest (e.g. `docs/sample_manifest.md` or `reference_audio/README.md` outside git)
-- [ ] Extend `analyze_viola.py` (or new script) to **batch real files**: pyin ground truth vs Teensy-sim / offline YIN; report octave-error rate + cents MAE
-- [ ] Capture **live Teensy** on real playing (COM3 or Android) while recording reference audio for A/B
-- [ ] Catalog failure modes: low C/G, attacks, note changes, vibrato width, two-string rings
+- [x] **Continuous-take → slice → COM3** workflow
+  - `teensy/tools/slice_note_takes.py` — energy + pyin boundaries, manifest
+  - `teensy/tools/test_noah_halfsteps_live.py` — play each clip, score note names
+  - Media under `test_audio/` and `_live_capture/` (gitignored)
+- [x] **Noah viola** first-position half steps (C3–E5): **32/32 note names** live (2026-07-18)
+- [ ] **Pro violinist** same half-step exercise (expect better ET cents) — same parse + live test
+- [ ] After pro violin: decide on residual **G3↔G4 freckle** (2nd partial of G3 ≈ G4)
+- [ ] Optional later: vibrato, dynamics, cello; offline pyin vs Teensy-sim batch metrics
 
-### Next — algorithm (only driven by real-sample metrics)
-- [ ] Prototype **YIN + light harmonic / HPS referee** offline first (`analyze_viola.py`)
-- [ ] Port hybrid to Teensy **only if** low-string octave rate improves without hurting latency/CPU
-- [ ] Revisit octave snap aggressiveness using real data (not only synthetic)
+### Next — algorithm (only if real suites still fail)
+- [x] YIN + light Goertzel harmonic referee on Teensy (v6)
+- [ ] Further freckle / cents work only if pro suite shows user-visible issues
 - [ ] Soft low-string SNR: contact/piezo experiment vs air INMP441
 
-### Product / platform (parallel, lower than real-sample pitch)
-- [x] Android staff: fixed geometry, short ledgers, instrument cycle, denser controls
-- [x] Android pause: frozen sample snapshot (trace no longer vanishes while paused)
-- [x] Android cents display: mild bandwidth limit (tunable in `CentsDisplaySmoother`)
-- [ ] Android: confidence/level UI, reconnect robustness, optional Soft/Medium/Sharp filter control
-- [ ] iOS beyond BLE scaffold
-- [ ] Rhythm detection prototype (still aspirational)
-- [ ] Session logging (host-side first; SD card later)
+### Product / platform (parallel)
+- [x] Android staff geometry, pause snapshot, cents LPF, jump filter, Range ±50/±25, concert A 441
+- [ ] Android: confidence/level UI, reconnect robustness
+- [ ] Equal vs just (“absolute”) temperament mode (app-side)
+- [ ] iOS beyond BLE scaffold; rhythm; session logging
 
 ### Open questions
-- Best short list of “must pass” real excerpts before claiming production pitch quality?
+- Is residual G3 freckle audible/visible on clean pro tone, or only on student/speaker path?
 - Contact mic hardware + placement for viola C string?
-- Hybrid referee only below G3 / middling YIN conf, or always-on light check?
 - Rhythm on Teensy vs host?
 
 ---
@@ -300,10 +296,10 @@ intune/
 │   ├── platformio.ini
 │   ├── REPORT.md / DEBUG_PROGRESSION.md
 │   ├── src/
-│   │   ├── main.cpp              (CSV output, gating, octave snap)
-│   │   ├── pitch_detector.cpp    (overlapping YIN)
+│   │   ├── main.cpp              (CSV output, gating, median freckle filter)
+│   │   ├── pitch_detector.cpp    (YIN + Goertzel harmonic referee)
 │   │   └── pitch_detector.h
-│   └── tools/                    (COM3 test harness; local results gitignored)
+│   └── tools/                    (COM3 harness, slice_note_takes, live suites; results gitignored)
 ├── esp32/                        (UART → BLE bridge)
 ├── android/                      (Intune Stream — staff/cents, pause snapshot, display LPF)
 │   └── scripts/                  (ADB capture + scale play for UI review)
