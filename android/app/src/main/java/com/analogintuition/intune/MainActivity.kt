@@ -32,7 +32,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -49,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -533,23 +533,37 @@ private fun SettingsDialog(
     onNudgeConcertA: (Float) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    // Custom Dialog (not AlertDialog): Material AlertDialog often clips its body
+    // in landscape, leaving only title/Done — so A4 controls vanish.
+    val landscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = IntuneColors.Panel,
+            modifier = Modifier.fillMaxWidth(if (landscape) 0.72f else 0.92f),
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = if (landscape) 12.dp else 16.dp,
+                    )
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(if (landscape) 8.dp else 12.dp),
+            ) {
                 Text(
-                    "Concert A",
+                    "Settings",
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
+                    fontSize = 18.sp,
                     color = IntuneColors.TextPrimary,
                 )
                 Text(
-                    "Reference pitch for note names and cents. " +
-                        "Detector still measures absolute frequency; only the labels change.",
+                    "Concert A — reference for note names and cents only",
                     fontSize = 12.sp,
                     color = IntuneColors.TextDim,
-                    lineHeight = 16.sp,
+                    maxLines = if (landscape) 1 else 2,
                 )
                 CompactStepperRow(
                     label = "A4",
@@ -558,44 +572,47 @@ private fun SettingsDialog(
                     increaseLabel = "+",
                     onDecrease = { onNudgeConcertA(-1f) },
                     onIncrease = { onNudgeConcertA(1f) },
+                    dense = landscape,
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     listOf(440f, 441f, 442f).forEach { preset ->
-                        val selected = kotlin.math.abs(concertAHz - preset) < 0.5f
+                        val selected = abs(concertAHz - preset) < 0.5f
+                        val mod = Modifier
+                            .weight(1f)
+                            .height(if (landscape) 34.dp else 36.dp)
                         if (selected) {
                             Button(
                                 onClick = { onConcertAChange(preset) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(36.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = mod,
                             ) {
                                 Text("%.0f".format(preset), fontSize = 13.sp, maxLines = 1)
                             }
                         } else {
                             FilledTonalButton(
                                 onClick = { onConcertAChange(preset) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(36.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = mod,
                             ) {
                                 Text("%.0f".format(preset), fontSize = 13.sp, maxLines = 1)
                             }
                         }
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Done")
+                    }
+                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Done")
-            }
-        },
-    )
+        }
+    }
 }
 
 private enum class NoteCardLayout { Portrait, Compact }
