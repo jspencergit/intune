@@ -29,6 +29,8 @@ Living checklist. Context and architecture: **[design.md](design.md)**.
   - Parse with `slice_note_takes.py` (add `--instrument violin` playlist if needed)
   - Live Teensy suite + score note accuracy / cents MAE vs ET
   - **Then** decide whether G3↔G4 freckle needs more detector work
+  - **Also** keep clips as seed for **reference-tone playback** (product — see below)
+  - *Not now:* auto-tune Noah to ET for “ideal” viola samples (possible later; pro bank is preferred for hear-the-note)
 
 ### Algorithm (in progress)
 - [x] Prototype **YIN + light Goertzel harmonic octave referee** (Teensy v4/v5/v6)
@@ -92,6 +94,17 @@ If the detector is briefly confused, the app should still **show something usefu
 - [ ] Confidence/level UI, reconnect polish
 - [ ] Optional Soft / Medium / Sharp control for cents display filter (`CentsDisplaySmoother`)
 - [ ] Android UI review loop — `android/scripts/` (ADB screenshots + scale play)
+
+### Reference-tone playback (product idea — not started)
+When the user wants to **hear** a target note (e.g. open A, or any first-position pitch), play a **real instrument sample**, not a synth beep.
+
+- [ ] Build sample bank from **pro** continuous takes (sliced clips; gitignored media)
+  - Metadata: instrument, note, original concert A, no-vibrato preferred for “tuner” mode
+- [ ] App/PC: **Play note** → load sample → optional short pitch-shift for current **concert A** (same ⚙ A=440/441/442)
+  - Shift cents ≈ `1200 * log2(displayA / recordedA)` for open A; per-note from labeled bank
+- [ ] Wire to existing concert-A setting (labels + playback share one reference)
+- [ ] Optional later: viola/cello banks; soft fade; separate “tone” sample with light vibrato
+- [ ] Explicitly **do not** rely on auto-tuned student takes as the product reference (keep Noah raw for detector stress only)
 
 ### Other
 - [ ] iOS beyond BLE scaffold

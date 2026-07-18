@@ -3,8 +3,8 @@
 **Real-time Intonation + Rhythm Tutor for Viola, Violin & Cello**
 
 **Status**: Working prototype (July 2026)  
-**Current focus**: Pro violin first-position half-step suite (same continuous-take → slice → COM3 flow as Noah); only then revisit residual G3↔G4 freckle.  
-**Last major activity (2026-07-18):** Noah viola half steps (`test_audio/Noah_Viola_HalfSteps.mp3`) sliced to 32 clips; live Teensy **32/32 note names**. Tools: `slice_note_takes.py`, `test_noah_halfsteps_live.py`. Earlier: pitch v6 harmonic referee, Android jump filter, concert A default 441, cents Range ±50/±25.
+**Current focus**: **Paused** pending pro violinist first-position half-step recording. Same continuous-take → slice → COM3 flow as Noah; then freckle decision. Longer-term product: **reference-tone playback** from pro samples + concert-A pitch shift (see TODO).  
+**Last major activity (2026-07-18):** Noah viola half steps sliced 32 clips; live Teensy **32/32 note names**. Docs: suite workflow, G3/G4 freckle notes, pro + reference-playback plan.
 
 ---
 
@@ -14,7 +14,7 @@ Intune gives string players (primarily viola, also violin/cello) immediate, high
 
 Core value: Turn "I think that was out of tune" into "I can *see* exactly how sharp/flat I am, in real time, on the actual staff."
 
-Long-term: A complete practice companion with session logging, trend analysis, and AI-assisted feedback.
+Long-term: A complete practice companion with session logging, trend analysis, and AI-assisted feedback. Optional **hear the note** using a bank of real pro string samples, pitch-shifted to the user’s concert A (440/441/…).
 
 ---
 
@@ -275,6 +275,7 @@ Possible approaches for rhythm:
 
 ### Product / platform (parallel)
 - [x] Android staff geometry, pause snapshot, cents LPF, jump filter, Range ±50/±25, concert A 441
+- [ ] **Reference-tone playback** from pro sliced samples + shift for concert A (see TODO)
 - [ ] Android: confidence/level UI, reconnect robustness
 - [ ] Equal vs just (“absolute”) temperament mode (app-side)
 - [ ] iOS beyond BLE scaffold; rhythm; session logging
