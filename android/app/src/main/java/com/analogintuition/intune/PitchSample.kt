@@ -9,6 +9,11 @@ data class PitchSample(
     val level: Float,
     /** Continuous filtered pitch for display smoothing (NaN if unknown). */
     val pitchMidi: Float = Float.NaN,
+    /**
+     * Display-only: true during Steady-mode attack/transition window.
+     * Not set by BLE parse — applied by [ResponseDisplayMapper].
+     */
+    val isSettling: Boolean = false,
 ) {
     val isRest: Boolean get() = note == "---" || note == "REST"
     val displayNote: String get() = if (isRest) "REST" else note
@@ -41,14 +46,45 @@ object PitchCsvParser {
         )
     }
 
+    /**
+     * Stamp [hostTsMs] so the newest sample lands at [hostNowMs].
+     * Prefer Teensy device-time deltas within the batch (real ms gaps); fall back
+     * to 120 Hz index spacing if device clocks are missing or non-monotonic.
+     */
     fun assignHostTimestamps(
         incoming: List<PitchSample>,
         hostNowMs: Float,
     ): List<PitchSample> {
         if (incoming.isEmpty()) return emptyList()
-        return incoming.mapIndexed { idx, sample ->
-            val offset = (incoming.size - 1 - idx) * SAMPLE_INTERVAL_MS
-            sample.copy(hostTsMs = hostNowMs - offset)
+        val last = incoming.last()
+        val lastDev = last.deviceTsMs
+        val deviceOk = incoming.all { it.deviceTsMs > 0L } &&
+            incoming.zipWithNext().all { (a, b) ->
+                b.deviceTsMs >= a.deviceTsMs && (b.deviceTsMs - a.deviceTsMs) <= 500L
+            }
+        return if (deviceOk) {
+            incoming.map { sample ->
+                val ageMs = (lastDev - sample.deviceTsMs).toFloat().coerceIn(0f, 10_000f)
+                sample.copy(hostTsMs = hostNowMs - ageMs)
+            }
+        } else {
+            incoming.mapIndexed { idx, sample ->
+                val offset = (incoming.size - 1 - idx) * SAMPLE_INTERVAL_MS
+                sample.copy(hostTsMs = hostNowMs - offset)
+            }
         }
+    }
+
+    /** Wall-clock span covered by samples (ms), using host and device clocks. */
+    fun historySpanMs(samples: List<PitchSample>): Float {
+        if (samples.isEmpty()) return 0f
+        val hostSpan = samples.maxOf { it.hostTsMs } - samples.minOf { it.hostTsMs }
+        val devSpan = if (samples.any { it.deviceTsMs > 0L }) {
+            (samples.maxOf { it.deviceTsMs } - samples.minOf { it.deviceTsMs }).toFloat()
+        } else {
+            0f
+        }
+        // Host is primary (aligned to app clock); device is a floor if host collapsed.
+        return maxOf(hostSpan, devSpan, 0f)
     }
 }

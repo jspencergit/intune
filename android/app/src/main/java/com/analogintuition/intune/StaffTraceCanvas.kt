@@ -25,7 +25,10 @@ fun StaffTraceCanvas(
     inTuneThreshold: Float,
     instrument: StaffPitch.Instrument = StaffPitch.Instrument.Viola,
     paused: Boolean = false,
+    /** Absolute age of crosshair from live/pause edge (0 = newest). */
     scrubOffsetMs: Float = 0f,
+    /** Age at the right edge of the view (pan into history when paused). */
+    viewEndAgeMs: Float = 0f,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
@@ -36,13 +39,14 @@ fun StaffTraceCanvas(
         val plotTop = StaffChartGeometry.PLOT_TOP
         val plotBottom = StaffChartGeometry.plotBottom(h)
         val windowMs = windowSec * 1000f
+        val viewEnd = viewEndAgeMs.coerceAtLeast(0f)
 
         val staff = StaffPitch.fixedStaff(plotTop, plotBottom, instrument)
 
         fun pitchToY(pitchY: Float): Float = staff.pitchToScreenY(pitchY)
 
-        fun ageToX(ageMs: Float): Float {
-            val t = (ageMs / windowMs).coerceIn(0f, 1f)
+        fun relAgeToX(relAgeMs: Float): Float {
+            val t = (relAgeMs / windowMs).coerceIn(0f, 1f)
             return plotRight - t * (plotRight - plotLeft)
         }
 
@@ -84,28 +88,20 @@ fun StaffTraceCanvas(
         }
         val clefAnchorY = pitchToY(instrument.clefAnchor)
         val nativeCanvas = drawContext.canvas.nativeCanvas
-        if (instrument.clefSymbol != null) {
-            // Scale clef with line spacing so it still spans the staff
-            clefPaint.textSize = (staff.lineGapPx * 1.55f).coerceIn(40f, 72f)
-            nativeCanvas.drawText(
-                instrument.clefSymbol,
-                6f,
-                clefAnchorY + clefPaint.textSize * 0.32f,
-                clefPaint,
-            )
-        } else {
-            clefPaint.textSize = (staff.lineGapPx * 0.42f).coerceIn(12f, 18f)
-            clefPaint.typeface = android.graphics.Typeface.create(
-                android.graphics.Typeface.DEFAULT,
-                android.graphics.Typeface.BOLD,
-            )
-            drawVerticalClefLabel(
-                canvas = nativeCanvas,
-                text = "alto",
-                centerX = StaffChartGeometry.GUTTER * 0.42f,
-                centerY = clefAnchorY,
-                paint = clefPaint,
-            )
+        val clef = instrument.clefSymbol
+        if (clef != null) {
+            // Scale + baseline per clef glyph (Unicode music symbols differ optically).
+            // clefAnchor = staff line the clef sits on (C mid / F for bass / G for treble).
+            val (sizeMul, baselineFrac) = when (instrument) {
+                StaffPitch.Instrument.Viola -> 1.75f to 0.36f   // C clef centered on middle line
+                // Bass: Unicode 𝄢 sits high on the baseline — large frac moves dots onto F line.
+                StaffPitch.Instrument.Cello -> 2.05f to 1.02f
+                // Treble: spiral should wrap the G line (2nd from bottom); was a bit low.
+                StaffPitch.Instrument.Violin -> 2.0f to 0.42f
+            }
+            clefPaint.textSize = (staff.lineGapPx * sizeMul).coerceIn(40f, 88f)
+            val baseline = clefAnchorY + clefPaint.textSize * baselineFrac
+            nativeCanvas.drawText(clef, 4f, baseline, clefPaint)
         }
 
         val labelPaint = android.graphics.Paint().apply {
@@ -132,19 +128,22 @@ fun StaffTraceCanvas(
         if (samples.isNotEmpty()) {
             for (sample in samples) {
                 val age = displayNowMs - sample.hostTsMs
-                if (age < 0f || age > windowMs + 400f) continue
-                val x = ageToX(age)
+                val rel = age - viewEnd
+                if (rel < -50f || rel > windowMs + 50f) continue
+                val x = relAgeToX(rel)
                 val pitchY = if (sample.isRest) {
                     lastPitchY
                 } else {
                     StaffPitch.pitchYWithCents(sample.note, sample.cents).also { lastPitchY = it }
                 }
                 val y = pitchToY(pitchY)
-                val col = if (sample.isRest) {
-                    IntuneColors.Rest.copy(alpha = 0.45f)
-                } else {
-                    val alpha = 0.45f + sample.confidence.coerceIn(0f, 1f) * 0.55f
-                    IntuneColors.centsColor(sample.cents, inTuneThreshold).copy(alpha = alpha)
+                val col = when {
+                    sample.isRest -> IntuneColors.Rest.copy(alpha = 0.45f)
+                    sample.isSettling -> IntuneColors.TextDim.copy(alpha = 0.55f)
+                    else -> {
+                        val alpha = 0.45f + sample.confidence.coerceIn(0f, 1f) * 0.55f
+                        IntuneColors.centsColor(sample.cents, inTuneThreshold).copy(alpha = alpha)
+                    }
                 }
                 points.add(Triple(x, y, col))
 
@@ -184,7 +183,8 @@ fun StaffTraceCanvas(
 
         val cursorX = if (paused) {
             ChartScrubGeometry.scrubOffsetToX(
-                scrubOffsetMs, w, windowMs, plotLeft, plotRight,
+                (scrubOffsetMs - viewEnd).coerceIn(0f, windowMs),
+                w, windowMs, plotLeft, plotRight,
             )
         } else {
             plotRight
@@ -210,18 +210,18 @@ fun StaffTraceCanvas(
             val inspectMs = displayNowMs - scrubOffsetMs
             val inspect = samples.nearestTo(inspectMs)
             if (inspect != null) {
-                val inspectAge = displayNowMs - inspect.hostTsMs
-                if (inspectAge in 0f..windowMs + 400f) {
+                val inspectRel = (displayNowMs - inspect.hostTsMs) - viewEnd
+                if (inspectRel in -20f..windowMs + 20f) {
                     val pitchY = if (inspect.isRest) {
                         lastPitchY
                     } else {
                         StaffPitch.pitchYWithCents(inspect.note, inspect.cents)
                     }
                     val dotY = pitchToY(pitchY)
-                    val dotCol = if (inspect.isRest) {
-                        IntuneColors.Rest
-                    } else {
-                        IntuneColors.centsColor(inspect.cents, inTuneThreshold)
+                    val dotCol = when {
+                        inspect.isRest -> IntuneColors.Rest
+                        inspect.isSettling -> IntuneColors.TextDim
+                        else -> IntuneColors.centsColor(inspect.cents, inTuneThreshold)
                     }
                     if (!inspect.isRest) {
                         for (lp in staff.ledgerPitchesFor(pitchY)) {
@@ -250,20 +250,4 @@ fun StaffTraceCanvas(
     }
 }
 
-private fun drawVerticalClefLabel(
-    canvas: android.graphics.Canvas,
-    text: String,
-    centerX: Float,
-    centerY: Float,
-    paint: android.graphics.Paint,
-) {
-    val lineHeight = paint.textSize * 1.15f
-    val totalHeight = text.length * lineHeight
-    var y = centerY - totalHeight * 0.5f + paint.textSize * 0.85f
-    for (ch in text) {
-        val glyph = ch.toString()
-        val x = centerX - paint.measureText(glyph) * 0.5f
-        canvas.drawText(glyph, x, y, paint)
-        y += lineHeight
-    }
-}
+

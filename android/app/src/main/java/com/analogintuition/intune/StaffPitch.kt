@@ -29,8 +29,8 @@ object StaffPitch {
             pitchMin = 1.2f,
             pitchMax = 7.6f,
             staffLines = floatArrayOf(2.4f, 3.2f, 4.0f, 4.8f, 5.6f),
-            clefAnchor = 4.0f,
-            clefSymbol = null,
+            clefAnchor = 4.0f, // middle staff line (alto C clef)
+            clefSymbol = "\uD834\uDD21", // 𝄡 C / alto clef (U+1D121)
         ),
         Cello(
             label = "Cello",
@@ -134,8 +134,9 @@ object StaffPitch {
     }
 
     /**
-     * Build a staff with the same pixel line spacing for every instrument.
-     * Staff block is vertically centered in [plotTop, plotBottom] with margin for ledgers.
+     * Build a staff with constant line spacing, sized so the instrument's
+     * practical pitch range (pitchMin..pitchMax) fits in the plot — e.g. viola
+     * C3–E5 with ledgers, without clipping the top of the panel.
      */
     fun fixedStaff(
         plotTop: Float,
@@ -143,21 +144,27 @@ object StaffPitch {
         instrument: Instrument,
     ): FixedStaff {
         val lines = instrument.staffLines.sortedArray()
+        val bottomPitch = lines.first()
+        val topPitch = lines.last()
         val avail = (plotBottom - plotTop).coerceAtLeast(40f)
-        // Fill most of the chart: 4 line-gaps + ~0.4 space margin each side for ledgers.
-        // No tight max — landscape has plenty of height; let line spacing scale with the panel.
-        val lineGap = (avail / 4.8f).coerceIn(18f, 96f)
-        val staffBlockH = 4f * lineGap
-        val mid = (plotTop + plotBottom) * 0.5f
-        val staffBottomY = mid + staffBlockH * 0.5f
-        val staffTopY = mid - staffBlockH * 0.5f
+
+        // Fit full instrument range + pad so extremes (e.g. viola E5) are not
+        // flush against the panel edge.
+        val pitchLo = minOf(bottomPitch, instrument.pitchMin) - STAFF_SPACE * 0.55f
+        val pitchHi = maxOf(topPitch, instrument.pitchMax) + STAFF_SPACE * 0.65f
+        val spaces = ((pitchHi - pitchLo) / STAFF_SPACE).coerceAtLeast(4.5f)
+        val lineGap = (avail / spaces).coerceIn(12f, 96f)
+
+        // Map pitchLo → plotBottom, pitchHi → plotTop (full range uses [plotTop, plotBottom]).
+        val staffBottomY = plotBottom + (pitchLo - bottomPitch) / STAFF_SPACE * lineGap
+        val staffTopY = staffBottomY - (topPitch - bottomPitch) / STAFF_SPACE * lineGap
         return FixedStaff(
             linesLowToHigh = lines,
             lineGapPx = lineGap,
             staffBottomY = staffBottomY,
             staffTopY = staffTopY,
-            bottomPitch = lines.first(),
-            topPitch = lines.last(),
+            bottomPitch = bottomPitch,
+            topPitch = topPitch,
         )
     }
 

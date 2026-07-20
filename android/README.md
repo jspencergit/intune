@@ -6,11 +6,12 @@ Kotlin / Jetpack Compose app for **real-time cents-focused intonation practice**
 
 - Connects to ESP32 **Nordic UART** BLE peripheral (advertises as **Intune**)
 - **Cents Focus** card — note name, ±cents, sharp/flat/in-tune status
-- Scrolling cents trace chart (default **±50¢** for beginners; **Range** control toggles **±25¢** zoomed-in view; mild display bandwidth limit)
+- Scrolling cents trace chart (default **±100¢**; **Range** −/+ steps **±25 / ±50 / ±100**; Steady/Live display shaping)
 - **Concert A** (default **441 Hz**) — gear ⚙ settings; remaps note/cents in the app (Teensy still streams @ 440)
 - **Staff view** — fixed five-line geometry (same pixel spacing for Viola / Cello / Violin); short ledgers only when needed
-- **Pause / Play** — freezes a sample snapshot so the trace stays while you scrub (live BLE cannot age it away)
-- **Scroll speed** — Slower / Faster (2–24 s visible window)
+- **Pause / Play** — freezes a sample snapshot (~90 s ring) so history stays while you review
+- **Span** — visible time on screen (2–60 s). **+** zooms out (more history), **−** zooms in
+- **Pan** (paused) — slide the window through older/newer history; crosshair keeps absolute time
 - **In-tune zone** — Narrow / Widen (±2–25¢ threshold)
 - **Portrait** and **landscape** layouts; BLE stays connected on rotation
 
@@ -72,16 +73,30 @@ Key sources:
 | **Connect** / **Disconnect** | BLE session |
 | **⚙ Settings** | Concert A (440 / 441 / 442 presets, ±1 Hz) |
 | **Pause** / **Play** | Freeze snapshot / resume live scroll |
-| **Drag chart** (paused) | Move review cursor; updates Cents Focus card |
-| **Scroll − / +** | Wider / narrower time window |
+| **1-finger drag** (paused) | Move the vertical **marker** (inspect note/cents) |
+| **2-finger drag** (paused) | **Pan** history under the window (marker keeps absolute time) |
+| **Span − / +** | Zoom in / out time (seconds on screen). **+** = more history |
+| **Pan « / »** (paused) | Step history older / newer (same as two-finger pan) |
 | **Zone − / +** | Tighter / looser in-tune band |
-| **Range − / +** (cents view) | Tighter ±25¢ / wider ±50¢ vertical scale |
+| **Range − / +** (cents view) | Vertical scale ±25 / ±50 / ±100 (default ±100) |
 | **Staff** / **Cents** | Toggle chart between staff and cents trace |
 | **Instrument · …** (staff mode) | Cycle Viola / Cello / Violin (clef + range) |
+| **Response · Steady / Live** | How attacks are shown (see below). Default **Steady**. Persists. |
+
+## Response modes (Steady / Live)
+
+Detector still runs at full rate. **Response** only changes display and in-tune coloring (`ResponseDisplayMapper`):
+
+| Mode | Behavior |
+|------|----------|
+| **Steady** (default) | ~100 ms after each new note: header shows **settling** (no sharp/flat color); cents trace gaps the attack; stronger smoothing (τ ≈ 120 ms). Best for slow intonation practice. |
+| **Live** | Light smoothing only (τ ≈ 60 ms); attacks and scoops stay visible. |
+
+Tap **Response · … ›** to cycle. SharedPreferences key `response_mode`.
 
 ## Display filtering (cents chart)
 
-Raw detector cents can spike on note attacks. The scroll trace runs a **display-only** pipeline (`CentsDisplaySmoother`): short median → per-sample slew cap → 1-pole low-pass (τ ≈ 60 ms). Header note/cents still follow the latest sample; staff pitch uses ingest MIDI smoothing. Tune constants in `CentsDisplaySmoother.kt` if edges feel too soft or too spiky.
+Raw detector cents can spike on note attacks. Display samples go through `ResponseDisplayMapper` → `CentsDisplaySmoother` (median → slew cap → 1-pole LPF). Staff note names still use ingest MIDI smoothing (`PitchStreamFilter`).
 
 ## Build from command line
 

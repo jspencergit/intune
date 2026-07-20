@@ -30,8 +30,8 @@ class BleStreamClient(context: Context) {
         private val TX_UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val TARGET_NAME = "Intune"
-        // ~40s at 120 Hz — covers max 24s window + pause headroom before snapshot
-        private const val MAX_SAMPLES = 4800
+        // ~90s at 120 Hz — pause review / wide Span zoom (MAX_SPAN 60s + headroom)
+        private const val MAX_SAMPLES = 10_800
         private const val SCAN_TIMEOUT_MS = 15_000L
     }
 
@@ -56,6 +56,9 @@ class BleStreamClient(context: Context) {
     private var streamAnchorMs = 0L
     private var scanTimeoutRunnable: Runnable? = null
     private val pitchFilter = PitchStreamFilter()
+    /** Last accepted sample clocks — chain host times across BLE batches. */
+    private var lastStampedHostTs = Float.NaN
+    private var lastStampedDeviceTs = 0L
 
     fun hostNowMs(): Float {
         if (streamAnchorMs == 0L) streamAnchorMs = SystemClock.elapsedRealtime()
@@ -64,6 +67,8 @@ class BleStreamClient(context: Context) {
 
     fun resetStreamClock() {
         streamAnchorMs = SystemClock.elapsedRealtime()
+        lastStampedHostTs = Float.NaN
+        lastStampedDeviceTs = 0L
     }
 
     private fun deviceLabel(result: ScanResult): String {
@@ -228,9 +233,52 @@ class BleStreamClient(context: Context) {
         val parsed = complete.mapNotNull { PitchCsvParser.parse(it) }
         if (parsed.isEmpty()) return
         val filtered = pitchFilter.filter(parsed)
-        val stamped = PitchCsvParser.assignHostTimestamps(filtered, hostNowMs())
+        val stamped = stampContinuous(filtered, hostNowMs())
         val merged = (_state.value.samples + stamped).takeLast(MAX_SAMPLES)
         _state.value = _state.value.copy(samples = merged)
+    }
+
+    /**
+     * Assign [PitchSample.hostTsMs] so the ring buffer spans real time.
+     * Chains Teensy device ms across BLE packets; soft-snaps the tail to host now
+     * so ages stay aligned with [hostNowMs] without collapsing older samples.
+     */
+    private fun stampContinuous(
+        incoming: List<PitchSample>,
+        hostNowMs: Float,
+    ): List<PitchSample> {
+        if (incoming.isEmpty()) return emptyList()
+        val out = ArrayList<PitchSample>(incoming.size)
+        for (sample in incoming) {
+            val hostTs = when {
+                lastStampedHostTs.isNaN() -> hostNowMs
+                sample.deviceTsMs > lastStampedDeviceTs && lastStampedDeviceTs > 0L -> {
+                    val step = (sample.deviceTsMs - lastStampedDeviceTs).toFloat()
+                        .coerceIn(0f, 250f)
+                    lastStampedHostTs + step
+                }
+                sample.deviceTsMs == lastStampedDeviceTs && lastStampedDeviceTs > 0L -> {
+                    lastStampedHostTs + (1000f / 120f)
+                }
+                else -> {
+                    // First sample after reset, or device clock went backwards.
+                    hostNowMs
+                }
+            }
+            out.add(sample.copy(hostTsMs = hostTs))
+            lastStampedHostTs = hostTs
+            if (sample.deviceTsMs > 0L) lastStampedDeviceTs = sample.deviceTsMs
+        }
+        // Soft-align only when host wall clock is ahead (BLE lag). Never pull
+        // timestamps backward — that can overlap older ring samples.
+        val drift = hostNowMs - out.last().hostTsMs
+        if (drift in 0.5f..2_000f) {
+            for (i in out.indices) {
+                out[i] = out[i].copy(hostTsMs = out[i].hostTsMs + drift)
+            }
+            lastStampedHostTs = out.last().hostTsMs
+        }
+        return out
     }
 
     @SuppressLint("MissingPermission")
@@ -245,6 +293,8 @@ class BleStreamClient(context: Context) {
         }
         cleanupGatt(clearStatus = false)
         lineBuffer = StringBuilder()
+        lastStampedHostTs = Float.NaN
+        lastStampedDeviceTs = 0L
         _state.value = UiState(status = "Scanning for Intune…", scanning = true)
 
         val settings = ScanSettings.Builder()

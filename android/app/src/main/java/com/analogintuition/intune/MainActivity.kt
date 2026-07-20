@@ -11,8 +11,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,23 +42,29 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import kotlin.math.abs
+
+/** Human label for visible time span (oscilloscope horizontal scale). */
+private fun formatSpanLabel(sec: Float): String =
+    if (sec >= 10f - 1e-3f) "%.0fs".format(sec) else "%.1fs".format(sec)
 
 class MainActivity : ComponentActivity() {
 
@@ -177,18 +183,25 @@ private fun IntuneScreen(
                 centsScaleMax = viewModel.centsScaleMax,
                 traceViewMode = viewModel.traceViewMode,
                 staffInstrument = viewModel.staffInstrument,
+                responseMode = viewModel.responseMode,
                 paused = viewModel.paused,
                 scrubOffsetMs = viewModel.scrubOffsetMs,
-                onScrub = viewModel::setScrubOffset,
+                viewEndAgeMs = viewModel.viewEndAgeMs,
+                pauseHistoryLabel = viewModel.pauseHistoryLabel(),
+                onScrubFromPlotX = viewModel::setScrubFromPlotX,
+                onPanView = viewModel::panView,
                 onPauseToggle = { viewModel.togglePause(viewModel.displayNowMs) },
-                onScrollSlower = viewModel::scrollSlower,
-                onScrollFaster = viewModel::scrollFaster,
+                onSpanWider = viewModel::spanWider,
+                onSpanTighter = viewModel::spanTighter,
+                onPanOlder = viewModel::panOlder,
+                onPanNewer = viewModel::panNewer,
                 onTuneWider = viewModel::widenTuneZone,
                 onTuneNarrower = viewModel::narrowTuneZone,
                 onCentsRangeWider = viewModel::centsRangeWider,
                 onCentsRangeTighter = viewModel::centsRangeTighter,
                 onToggleTraceView = viewModel::toggleTraceView,
                 onCycleInstrument = viewModel::cycleStaffInstrument,
+                onCycleResponseMode = viewModel::cycleResponseMode,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -203,18 +216,25 @@ private fun IntuneScreen(
                 centsScaleMax = viewModel.centsScaleMax,
                 traceViewMode = viewModel.traceViewMode,
                 staffInstrument = viewModel.staffInstrument,
+                responseMode = viewModel.responseMode,
                 paused = viewModel.paused,
                 scrubOffsetMs = viewModel.scrubOffsetMs,
-                onScrub = viewModel::setScrubOffset,
+                viewEndAgeMs = viewModel.viewEndAgeMs,
+                pauseHistoryLabel = viewModel.pauseHistoryLabel(),
+                onScrubFromPlotX = viewModel::setScrubFromPlotX,
+                onPanView = viewModel::panView,
                 onPauseToggle = { viewModel.togglePause(viewModel.displayNowMs) },
-                onScrollSlower = viewModel::scrollSlower,
-                onScrollFaster = viewModel::scrollFaster,
+                onSpanWider = viewModel::spanWider,
+                onSpanTighter = viewModel::spanTighter,
+                onPanOlder = viewModel::panOlder,
+                onPanNewer = viewModel::panNewer,
                 onTuneWider = viewModel::widenTuneZone,
                 onTuneNarrower = viewModel::narrowTuneZone,
                 onCentsRangeWider = viewModel::centsRangeWider,
                 onCentsRangeTighter = viewModel::centsRangeTighter,
                 onToggleTraceView = viewModel::toggleTraceView,
                 onCycleInstrument = viewModel::cycleStaffInstrument,
+                onCycleResponseMode = viewModel::cycleResponseMode,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -233,18 +253,25 @@ private fun PortraitPracticeLayout(
     centsScaleMax: Float,
     traceViewMode: TraceViewMode,
     staffInstrument: StaffPitch.Instrument,
+    responseMode: ResponseMode,
     paused: Boolean,
     scrubOffsetMs: Float,
-    onScrub: (Float) -> Unit,
+    viewEndAgeMs: Float,
+    pauseHistoryLabel: String,
+    onScrubFromPlotX: (Float, Float, Float, Float) -> Unit,
+    onPanView: (Float) -> Unit,
     onPauseToggle: () -> Unit,
-    onScrollSlower: () -> Unit,
-    onScrollFaster: () -> Unit,
+    onSpanWider: () -> Unit,
+    onSpanTighter: () -> Unit,
+    onPanOlder: () -> Unit,
+    onPanNewer: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
     onCentsRangeWider: () -> Unit,
     onCentsRangeTighter: () -> Unit,
     onToggleTraceView: () -> Unit,
     onCycleInstrument: () -> Unit,
+    onCycleResponseMode: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -274,7 +301,9 @@ private fun PortraitPracticeLayout(
                 centsScaleMax = centsScaleMax,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
-                onScrub = onScrub,
+                viewEndAgeMs = viewEndAgeMs,
+                onScrubFromPlotX = onScrubFromPlotX,
+                onPanView = onPanView,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -285,15 +314,20 @@ private fun PortraitPracticeLayout(
             centsScaleMax = centsScaleMax,
             traceViewMode = traceViewMode,
             staffInstrument = staffInstrument,
+            responseMode = responseMode,
+            pauseHistoryLabel = pauseHistoryLabel,
             onPauseToggle = onPauseToggle,
-            onScrollSlower = onScrollSlower,
-            onScrollFaster = onScrollFaster,
+            onSpanWider = onSpanWider,
+            onSpanTighter = onSpanTighter,
+            onPanOlder = onPanOlder,
+            onPanNewer = onPanNewer,
             onTuneWider = onTuneWider,
             onTuneNarrower = onTuneNarrower,
             onCentsRangeWider = onCentsRangeWider,
             onCentsRangeTighter = onCentsRangeTighter,
             onToggleTraceView = onToggleTraceView,
             onCycleInstrument = onCycleInstrument,
+            onCycleResponseMode = onCycleResponseMode,
             compact = true,
             modifier = Modifier
                 .fillMaxWidth()
@@ -312,18 +346,25 @@ private fun LandscapePracticeLayout(
     centsScaleMax: Float,
     traceViewMode: TraceViewMode,
     staffInstrument: StaffPitch.Instrument,
+    responseMode: ResponseMode,
     paused: Boolean,
     scrubOffsetMs: Float,
-    onScrub: (Float) -> Unit,
+    viewEndAgeMs: Float,
+    pauseHistoryLabel: String,
+    onScrubFromPlotX: (Float, Float, Float, Float) -> Unit,
+    onPanView: (Float) -> Unit,
     onPauseToggle: () -> Unit,
-    onScrollSlower: () -> Unit,
-    onScrollFaster: () -> Unit,
+    onSpanWider: () -> Unit,
+    onSpanTighter: () -> Unit,
+    onPanOlder: () -> Unit,
+    onPanNewer: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
     onCentsRangeWider: () -> Unit,
     onCentsRangeTighter: () -> Unit,
     onToggleTraceView: () -> Unit,
     onCycleInstrument: () -> Unit,
+    onCycleResponseMode: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -353,15 +394,20 @@ private fun LandscapePracticeLayout(
                 centsScaleMax = centsScaleMax,
                 traceViewMode = traceViewMode,
                 staffInstrument = staffInstrument,
+                responseMode = responseMode,
+                pauseHistoryLabel = pauseHistoryLabel,
                 onPauseToggle = onPauseToggle,
-                onScrollSlower = onScrollSlower,
-                onScrollFaster = onScrollFaster,
+                onSpanWider = onSpanWider,
+                onSpanTighter = onSpanTighter,
+                onPanOlder = onPanOlder,
+                onPanNewer = onPanNewer,
                 onTuneWider = onTuneWider,
                 onTuneNarrower = onTuneNarrower,
                 onCentsRangeWider = onCentsRangeWider,
                 onCentsRangeTighter = onCentsRangeTighter,
                 onToggleTraceView = onToggleTraceView,
                 onCycleInstrument = onCycleInstrument,
+                onCycleResponseMode = onCycleResponseMode,
                 compact = true,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -383,7 +429,9 @@ private fun LandscapePracticeLayout(
                 centsScaleMax = centsScaleMax,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
-                onScrub = onScrub,
+                viewEndAgeMs = viewEndAgeMs,
+                onScrubFromPlotX = onScrubFromPlotX,
+                onPanView = onPanView,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -401,51 +449,20 @@ private fun TraceChartPanel(
     centsScaleMax: Float,
     paused: Boolean,
     scrubOffsetMs: Float,
-    onScrub: (Float) -> Unit,
+    viewEndAgeMs: Float,
+    onScrubFromPlotX: (Float, Float, Float, Float) -> Unit,
+    onPanView: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var chartWidthPx by remember { mutableFloatStateOf(0f) }
-    val windowMs = windowSec * 1000f
     val plotLeft = when (traceViewMode) {
         TraceViewMode.Cents -> CentsChartGeometry.plotLeft()
         TraceViewMode.Staff -> StaffChartGeometry.plotLeft()
     }
-    val plotRight = chartWidthPx - CentsChartGeometry.PLOT_RIGHT_PAD
-
-    fun updateScrub(x: Float) {
-        if (chartWidthPx > 0f) {
-            onScrub(
-                ChartScrubGeometry.xToScrubOffsetMs(
-                    x, chartWidthPx, windowMs, plotLeft, plotRight,
-                ),
-            )
-        }
-    }
 
     Box(
         modifier = modifier
-            .onSizeChanged { chartWidthPx = it.width.toFloat() }
             .clip(RoundedCornerShape(12.dp))
-            .background(IntuneColors.Panel)
-            .then(
-                if (paused) {
-                    Modifier
-                        .pointerInput(windowSec, chartWidthPx) {
-                            detectTapGestures { offset -> updateScrub(offset.x) }
-                        }
-                        .pointerInput(windowSec, chartWidthPx) {
-                            detectHorizontalDragGestures(
-                                onDragStart = { offset -> updateScrub(offset.x) },
-                                onHorizontalDrag = { change, _ ->
-                                    updateScrub(change.position.x)
-                                    change.consume()
-                                },
-                            )
-                        }
-                } else {
-                    Modifier
-                },
-            ),
+            .background(IntuneColors.Panel),
     ) {
         when (traceViewMode) {
             TraceViewMode.Cents -> CentsTraceCanvas(
@@ -456,6 +473,7 @@ private fun TraceChartPanel(
                 centsScaleMax = centsScaleMax,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
+                viewEndAgeMs = viewEndAgeMs,
                 modifier = Modifier.fillMaxSize(),
             )
             TraceViewMode.Staff -> StaffTraceCanvas(
@@ -466,7 +484,59 @@ private fun TraceChartPanel(
                 instrument = staffInstrument,
                 paused = paused,
                 scrubOffsetMs = scrubOffsetMs,
+                viewEndAgeMs = viewEndAgeMs,
                 modifier = Modifier.fillMaxSize(),
+            )
+        }
+        // Gesture layer ON TOP of the canvas. (pointerInput on the parent Box loses
+        // hits to the Canvas child.) Do not key on viewEndAgeMs — that restarted the
+        // detector mid-pan and cancelled two-finger drags.
+        if (paused) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    // Keys: only geometry/span — never viewEndAgeMs (that cancelled mid-pan).
+                    .pointerInput(windowSec, plotLeft) {
+                        val windowMs = windowSec * 1000f
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            // Once a second finger joins, this gesture is pan-only.
+                            var multiTouch = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val pressed = event.changes.filter { it.pressed }
+                                if (pressed.isEmpty()) break
+                                if (pressed.size >= 2) multiTouch = true
+
+                                val width = size.width.toFloat()
+                                if (width <= 1f) {
+                                    pressed.forEach { it.consume() }
+                                    continue
+                                }
+                                val pRight = width - CentsChartGeometry.PLOT_RIGHT_PAD
+                                val pWidth = (pRight - plotLeft).coerceAtLeast(1f)
+                                val agePerPx = windowMs / pWidth
+
+                                if (multiTouch) {
+                                    if (pressed.size >= 2) {
+                                        // Centroid motion via positionChange (stable with multi-touch).
+                                        val dx = pressed
+                                            .map { it.positionChange().x }
+                                            .average()
+                                            .toFloat()
+                                        // Finger right → pull older history into view.
+                                        if (dx != 0f) onPanView(dx * agePerPx)
+                                    }
+                                    pressed.forEach { it.consume() }
+                                } else {
+                                    // Single finger: vertical marker only.
+                                    val x = pressed[0].position.x
+                                    onScrubFromPlotX(x, width, plotLeft, pRight)
+                                    pressed.forEach { it.consume() }
+                                }
+                            }
+                        }
+                    },
             )
         }
     }
@@ -631,17 +701,21 @@ private fun LiveNoteCard(
     val note = sample?.displayNote ?: "—"
     val cents = sample?.cents ?: 0f
     val isRest = sample == null || sample.isRest
+    val isSettling = sample?.isSettling == true
     val col = when {
         sample == null -> IntuneColors.TextDim
         isRest -> IntuneColors.Rest
+        isSettling -> IntuneColors.TextDim
         else -> IntuneColors.centsColor(cents, inTuneThreshold)
     }
     val qual = when {
         isRest -> "waiting"
+        isSettling -> "settling"
         abs(cents) < inTuneThreshold -> "in tune"
         cents > 0f -> "sharp"
         else -> "flat"
     }
+    val showCents = !isRest && !isSettling
 
     when (layout) {
         NoteCardLayout.Compact -> {
@@ -663,7 +737,7 @@ private fun LiveNoteCard(
                         color = col,
                         maxLines = 1,
                     )
-                    if (!isRest && sample != null) {
+                    if (showCents) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "%+.1f¢".format(cents),
@@ -701,7 +775,7 @@ private fun LiveNoteCard(
                         color = col,
                         maxLines = 1,
                     )
-                    if (!isRest && sample != null) {
+                    if (showCents) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "%+.1f ¢".format(cents),
@@ -729,15 +803,20 @@ private fun ControlPanel(
     centsScaleMax: Float,
     traceViewMode: TraceViewMode,
     staffInstrument: StaffPitch.Instrument,
+    responseMode: ResponseMode,
+    pauseHistoryLabel: String = "",
     onPauseToggle: () -> Unit,
-    onScrollSlower: () -> Unit,
-    onScrollFaster: () -> Unit,
+    onSpanWider: () -> Unit,
+    onSpanTighter: () -> Unit,
+    onPanOlder: () -> Unit,
+    onPanNewer: () -> Unit,
     onTuneWider: () -> Unit,
     onTuneNarrower: () -> Unit,
     onCentsRangeWider: () -> Unit,
     onCentsRangeTighter: () -> Unit,
     onToggleTraceView: () -> Unit,
     onCycleInstrument: () -> Unit,
+    onCycleResponseMode: () -> Unit,
     compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -799,24 +878,62 @@ private fun ControlPanel(
                 )
             }
         }
+        FilledTonalButton(
+            onClick = onCycleResponseMode,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (compact) 28.dp else 32.dp),
+        ) {
+            Text(
+                text = "Response · ${responseMode.label}  ›",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
         if (paused) {
             Text(
-                "Drag chart to review",
+                "1 finger = marker · 2 fingers = pan",
                 fontSize = 10.sp,
                 color = IntuneColors.TextDim,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,
             )
+            if (pauseHistoryLabel.isNotEmpty()) {
+                Text(
+                    pauseHistoryLabel,
+                    fontSize = 10.sp,
+                    color = IntuneColors.TextDim,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                )
+            }
         }
+        // Span = how much time is on screen (+ zooms out / more history visible).
         CompactStepperRow(
-            label = "Scroll",
-            valueLabel = "%.1fs".format(windowSec),
+            label = "Span",
+            valueLabel = formatSpanLabel(windowSec),
             decreaseLabel = "−",
             increaseLabel = "+",
-            onDecrease = onScrollSlower,
-            onIncrease = onScrollFaster,
+            onDecrease = onSpanTighter,
+            onIncrease = onSpanWider,
             dense = compact,
         )
+        if (paused) {
+            // Pan history under the fixed window; crosshair keeps absolute time.
+            CompactStepperRow(
+                label = "Pan",
+                valueLabel = "history",
+                decreaseLabel = "«",
+                increaseLabel = "»",
+                onDecrease = onPanOlder,
+                onIncrease = onPanNewer,
+                dense = compact,
+            )
+        }
         CompactStepperRow(
             label = "Zone",
             valueLabel = "±%.0f¢".format(inTuneThreshold),
@@ -866,7 +983,7 @@ private fun CompactStepperRow(
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
             color = IntuneColors.TextPrimary,
-            // Wide enough for "Scroll" / "Range" without clipping the last letter.
+            // Wide enough for "Span" / "Range" / "Zone" without clipping.
             modifier = Modifier.width(60.dp),
             maxLines = 1,
             softWrap = false,

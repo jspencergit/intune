@@ -1,7 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Release signing: android/keystore.properties (gitignored). See keystore.properties.example.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
 android {
@@ -12,13 +21,34 @@ android {
         applicationId = "com.analogintuition.intune"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
+    }
+
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                val storeFileName = keystoreProperties.getProperty("storeFile")
+                    ?: error("keystore.properties missing storeFile")
+                storeFile = rootProject.file(storeFileName)
+                storePassword = keystoreProperties.getProperty("storePassword")
+                    ?: error("keystore.properties missing storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                    ?: error("keystore.properties missing keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                    ?: error("keystore.properties missing keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+                ?: error(
+                    "Missing android/keystore.properties. " +
+                        "Run android/scripts/create-upload-keystore.ps1 first.",
+                )
         }
     }
 

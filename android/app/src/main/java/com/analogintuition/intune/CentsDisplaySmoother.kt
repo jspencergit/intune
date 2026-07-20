@@ -5,7 +5,7 @@ import kotlin.math.exp
 import kotlin.math.sign
 
 /**
- * Bandwidth-limited cents for the scroll trace.
+ * Bandwidth-limited cents for display (via [ResponseDisplayMapper]).
  *
  * Pitch detectors often put short overshoot/undershoot spikes on note attacks
  * (high-frequency content on top of the intended “square” detune steps). This
@@ -16,6 +16,7 @@ import kotlin.math.sign
  *  3. **1-pole low-pass** — rolls off remaining HF (bandwidth limit)
  *
  * Causal and deterministic when replayed oldest→newest (pause scrub uses the same path).
+ * Live vs Steady presets differ in [ResponseDisplayMapper].
  */
 class CentsDisplaySmoother(
     /** Odd window for impulse rejection. 3 ≈ 25 ms at 120 Hz — light spike kill only. */

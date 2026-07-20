@@ -15,6 +15,9 @@ app/build/
 *.ap_
 *.dex
 
-# Keystores (never commit signing keys)
+# Keystores / signing secrets (never commit)
 *.jks
 *.keystore
+keystore.properties
+upload-keystore.jks
+PLAY_SIGNING_BACKUP.txt
