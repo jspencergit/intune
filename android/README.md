@@ -12,14 +12,17 @@ Kotlin / Jetpack Compose app for **real-time cents-focused intonation practice**
 - **Pause / Play** — freezes a sample snapshot (~90 s ring) so history stays while you review
 - **Span** — visible time on screen (2–60 s). **+** zooms out (more history), **−** zooms in
 - **Pan** (paused) — slide the window through older/newer history; crosshair keeps absolute time
-- **In-tune zone** — Narrow / Widen (±2–25¢ threshold)
+- **In-tune zone** — Narrow / Widen (±2–25¢; default **±10¢**)
 - **Portrait** and **landscape** layouts; BLE stays connected on rotation
+- **Unicode clefs** on staff (treble / alto / bass) with per-instrument glyph tuning
+- Play distribution: **internal testing** (family testers); signed release AAB via local keystore
 
 ## Requirements
 
 - Android 8.0+ (API 26), Bluetooth LE
 - [Android Studio](https://developer.android.com/studio) (Ladybug or newer recommended)
 - ESP32 flashed with `esp32/` firmware (power-cycle after upload for reliable BLE advertising)
+- For Play uploads: local `keystore.properties` + `upload-keystore.jks` (gitignored; see below)
 
 ## Open and run
 
@@ -56,14 +59,15 @@ Key sources:
 
 | File | Role |
 |------|------|
-| `BleStreamClient.kt` | BLE scan, GATT, notify, CSV parse, sample ring buffer |
+| `BleStreamClient.kt` | BLE scan, GATT, notify, CSV parse, ~90 s sample ring, continuous host timestamps |
 | `PitchStreamFilter.kt` | Ingest MIDI median/EMA (note stability) |
-| `CentsDisplaySmoother.kt` | Display-only cents: median + slew + light LPF |
-| `IntuneViewModel.kt` | Pause snapshot, scrub, window, zone, instrument; survives rotation |
+| `ResponseMode.kt` / `ResponseDisplayMapper.kt` | Steady vs Live display shaping + attack settle |
+| `CentsDisplaySmoother.kt` | Display-only cents: median + slew + LPF (presets per Response mode) |
+| `IntuneViewModel.kt` | Pause snapshot, Span/Pan, scrub, zone, instrument, Response; survives rotation |
 | `IntuneApplication.kt` | Application-scoped BLE client |
-| `MainActivity.kt` | Compose UI (portrait / landscape, dense controls) |
+| `MainActivity.kt` | Compose UI (portrait / landscape; 1-finger marker, 2-finger pan) |
 | `CentsTraceCanvas.kt` | Cents chart + scrub cursor |
-| `StaffTraceCanvas.kt` / `StaffPitch.kt` | Fixed staff geometry + short ledgers |
+| `StaffTraceCanvas.kt` / `StaffPitch.kt` | Fixed staff geometry, Unicode clefs, short ledgers |
 | `CentsChartGeometry.kt` / `StaffChartGeometry.kt` | Plot layout, touch ↔ time mapping |
 
 ## Controls (in app)
@@ -100,7 +104,41 @@ Raw detector cents can spike on note attacks. Display samples go through `Respon
 
 ## Build from command line
 
-Gradle wrapper is not checked in; use Android Studio **Build → Make Project**, or generate a wrapper from the IDE if you need CLI builds.
+Gradle wrapper is not checked in; use Android Studio **Build → Make Project**, or a local Gradle install:
+
+```powershell
+cd android
+# Debug APK (USB install)
+#   gradle assembleDebug installDebug
+
+# Signed Play App Bundle (requires keystore — see below)
+.\scripts\build-release-aab.ps1
+# Output: app\build\outputs\bundle\release\app-release.aab
+```
+
+Bump `versionCode` / `versionName` in `app/build.gradle.kts` before each Play upload.
+
+### Play release signing (local secrets)
+
+| Path | Purpose |
+|------|---------|
+| `scripts/create-upload-keystore.ps1` | One-time upload keystore + `keystore.properties` |
+| `scripts/build-release-aab.ps1` | `bundleRelease` with that keystore |
+| `scripts/generate_launcher_icons.py` | Rebuild mipmaps from repo-root `IntuneLogo.png` |
+| `keystore.properties.example` | Template (no secrets) |
+| `store/play_icon_512.png` | 512×512 for Play store listing |
+
+**Never commit** `upload-keystore.jks`, `keystore.properties`, or `PLAY_SIGNING_BACKUP.txt` (gitignored). Back them up offline.
+
+### Google Play internal testing (family)
+
+1. Play Console app package: **`com.analogintuition.intune`** (must match `applicationId`).
+2. Complete required dashboard items as needed (privacy policy URL, content rating, Data safety, store listing).
+3. **Testing → Internal testing** → upload AAB → roll out.
+4. Add tester Gmail lists → **Copy link** → testers accept invite, then Install/Update.
+5. Each new build needs a **higher `versionCode`** and a new AAB upload; Play does not read your PC automatically.
+
+Launcher icon: adaptive mipmaps under `app/src/main/res/mipmap-*` from `IntuneLogo.png`.
 
 ## UI feedback loop (Grok + USB)
 

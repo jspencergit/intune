@@ -151,30 +151,36 @@ Kotlin / Jetpack Compose **Intune Stream** — primary mobile practice UI over B
 **Pipeline / sources**
 | File | Role |
 |------|------|
-| `BleStreamClient.kt` | BLE scan/GATT/notify, line reassembly, ring buffer (~4800 samples ≈ 40 s @ 120 Hz) |
-| `PitchCsvParser` | CSV parse; host timestamps; accepts line without trailing `\n` as fallback |
+| `BleStreamClient.kt` | BLE scan/GATT/notify, line reassembly, ring buffer (~10800 samples ≈ 90 s @ 120 Hz); continuous host timestamps via device ms |
+| `PitchCsvParser` | CSV parse; host timestamps; history span helpers |
 | `PitchStreamFilter.kt` | Ingest: median + EMA on **MIDI** (spike reject for note/staff pitch); raw cents largely pass through |
-| `CentsDisplaySmoother.kt` | **Display-only** cents path: short median → slew limit → 1-pole LPF (τ ≈ 60 ms) to cut pitch-detector attack overshoots without muddying intentional plateaus |
-| `IntuneViewModel.kt` | Pause/scrub/window/zone; **frozen sample snapshot on Pause** so live BLE cannot age the review window off the chart |
-| `CentsTraceCanvas.kt` / `StaffTraceCanvas.kt` | Charts + scrub cursor |
-| `StaffPitch.kt` | Diatonic Y_STEP model shared with raylib; **fixed staff geometry** |
+| `ResponseMode` / `ResponseDisplayMapper` | **Steady** (default) vs **Live**: attack settle window + stronger/weaker cents smoother |
+| `CentsDisplaySmoother.kt` | **Display-only** cents: short median → slew limit → 1-pole LPF (mode presets) |
+| `IntuneViewModel.kt` | Pause/Span/Pan/scrub/zone/instrument/Response; **frozen sample snapshot on Pause** |
+| `CentsTraceCanvas.kt` / `StaffTraceCanvas.kt` | Charts + scrub cursor; pan-aware time window |
+| `StaffPitch.kt` | Diatonic Y_STEP model shared with raylib; **fixed staff geometry** + range fit |
 
 **Staff display (parity with raylib)**
 - Five staff lines always **constant pixel spacing** across Viola / Cello / Violin; only clef + pitch→line mapping change.
+- Unicode clefs (treble / alto / bass) with per-instrument size/baseline tuning.
 - Cello bass lines even 0.8 pitch-Y spacing (`0.0…3.2`); was a 0.4 bug.
 - **Short ledgers** only where a note needs them (not full-width graph paper).
-- Staff block fills most of the chart height (landscape).
+- Staff block sized so practical pitch range (e.g. viola E5) fits without clipping.
 
-**Pause / review**
+**Pause / review (oscilloscope-style)**
 - On Pause: freeze display clock + **copy** samples for chart/scrub/focus.
+- **Span**: visible duration 2–60 s (**+** = more history on screen).
+- **Pan**: slide view into older history; 1-finger = marker, 2-finger = pan; « / » steppers.
+- Crosshair keeps absolute time when panning when possible.
 - On Play: drop snapshot, jump clock to live.
-- Drag chart while paused to scrub; focus card follows inspect sample.
 
 **UX**
-- Dense control rail (Pause primary, Staff/Cents, instrument chip, scroll/zone steppers).
-- ADB capture scripts under `android/scripts/` (screenshots gitignored).
+- Dense control rail (Pause, Staff/Cents, instrument, Response, Span/Pan/Zone/Range).
+- Concert A default 441 (app remap); Zone default ±10¢; Range default ±100¢.
+- ADB capture scripts under `android/scripts/`; Play AAB scripts + gitignored upload keystore.
+- Launcher: adaptive icons from `IntuneLogo.png` (v0.1.1+).
 
-**Known product gaps:** confidence/level UI, reconnect polish, Soft/Medium/Sharp filter UI (constants in `CentsDisplaySmoother` for now).
+**Known product gaps:** confidence/level UI, reconnect polish, full Play store listing polish, Soft/Medium/Sharp beyond Steady/Live.
 
 ### 2.7 PC-First Analysis Tool (visualizer/analyze_viola.py)
 
@@ -274,7 +280,8 @@ Possible approaches for rhythm:
 - [ ] Soft low-string SNR: contact/piezo experiment vs air INMP441
 
 ### Product / platform (parallel)
-- [x] Android staff geometry, pause snapshot, cents LPF, jump filter, Range ±50/±25, concert A 441
+- [x] Android staff geometry, pause snapshot, cents LPF, jump filter, Range ±25/50/100, concert A 441
+- [x] Android Steady/Live, Span/Pan pause review, Play internal testing path, logo icon (0.1.1)
 - [ ] **Reference-tone playback** from pro sliced samples + shift for concert A (see TODO)
 - [ ] Android: confidence/level UI, reconnect robustness
 - [ ] Equal vs just (“absolute”) temperament mode (app-side)

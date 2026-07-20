@@ -2,7 +2,7 @@
 
 Living checklist. Context and architecture: **[design.md](design.md)**.
 
-**Updated:** 2026-07-18
+**Updated:** 2026-07-20
 
 ---
 
@@ -91,9 +91,15 @@ Teacher: **tempered** ≈ piano **equal temperament** (what we do now — 12 equ
 ### Android display / UX
 If the detector is briefly confused, the app should still **show something useful**:
 - [x] `PitchStreamFilter`: was **3.5 st** freeze (open-string fifths = 7 st). Now **8.5 st** instant + **6-frame jump confirm**. Installed on device.
+- [x] **Response · Steady / Live** (attack settle + smoother presets; default Steady)
+- [x] Pause review: **Span** (2–60 s zoom) + **Pan** history; 1-finger marker / 2-finger pan
+- [x] Cents **Range** default **±100¢**; **Zone** default **±10¢**
+- [x] Staff Unicode clefs (treble/alto/bass) + range fit (viola E5, etc.)
+- [x] Play release path: signed AAB scripts, internal testing for family; launcher from `IntuneLogo.png` (v0.1.1)
 - [ ] Confidence/level UI, reconnect polish
-- [ ] Optional Soft / Medium / Sharp control for cents display filter (`CentsDisplaySmoother`)
+- [ ] Optional Soft / Medium / Sharp control for cents display filter (`CentsDisplaySmoother`) — partly covered by Steady/Live
 - [ ] Android UI review loop — `android/scripts/` (ADB screenshots + scale play)
+- [ ] Finish Play store listing / content checklist as needed for smoother tester installs
 
 ### Reference-tone playback (product idea — not started)
 When the user wants to **hear** a target note (e.g. open A, or any first-position pitch), play a **real instrument sample**, not a synth beep.
@@ -126,7 +132,8 @@ When the user wants to **hear** a target note (e.g. open A, or any first-positio
 - [x] Pause freezes sample snapshot so review trace stays on screen
 - [x] Cents display bandwidth limit (median + slew + light LPF; mild τ ≈ 60 ms)
 - [x] ADB scripts: capture UI / staff instruments / play-and-capture
-- [x] Android cents **Range** ±50/±25; landscape rail scroll; concert **A default 441** (gear settings)
+- [x] Android cents **Range** ±50/±25/±100; landscape rail scroll; concert **A default 441** (gear settings)
+- [x] Android Steady/Live, Span/Pan pause, Play internal testing + logo icon (0.1.1)
 - [x] Noah viola half-step slice + live suite **32/32 note names**
 
 ---

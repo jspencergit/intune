@@ -36,7 +36,7 @@ Teensy 4.1 + I²S mic  ──Serial4 @ 115200──►  ESP32  ──BLE Nordic 
         └── USB @ 230400 ──► PC visualizer         └── forwards live mic CSV
 ```
 
-Android app: **Cents Focus** + staff views (fixed geometry), pause snapshot + finger scrub, mild cents display filter, scroll speed, adjustable in-tune zone. See [`android/README.md`](android/README.md).
+Android app (**Intune Stream**): **Cents Focus** + staff (Unicode clefs, fixed geometry), **Steady/Live** attack display, concert A remap (default 441), pause snapshot with **Span** zoom + **Pan** history (1-finger marker / 2-finger pan), Range/Zone controls. Optional **Play internal testing** for family installs — see [`android/README.md`](android/README.md).
 
 ### Teensy ↔ ESP32 wiring
 
